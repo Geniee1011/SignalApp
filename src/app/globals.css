@@ -1,0 +1,86 @@
+@import "tailwindcss";
+
+/*
+  Signal app — same design language as the Trader Portal. Tailwind v4 theme
+  tokens exposed as utilities (bg-surface, text-muted, text-long, …).
+*/
+@theme {
+  --color-background: #0a0e17;
+  --color-surface: #111722;
+  --color-surface-2: #161e2e;
+  --color-surface-3: #1d2738;
+  --color-border: #243049;
+  --color-border-strong: #33415e;
+
+  --color-foreground: #e6edf6;
+  --color-muted: #8a97ad;
+  --color-muted-2: #5d6b82;
+
+  --color-primary: #3b82f6;
+  --color-primary-hover: #2f6fe0;
+  --color-primary-foreground: #ffffff;
+
+  --color-long: #16c784;
+  --color-long-soft: #16c78422;
+  --color-short: #ea3943;
+  --color-short-soft: #ea394322;
+  --color-warning: #f0b90b;
+  --color-info: #7c9cff;
+
+  --radius-card: 0.75rem;
+}
+
+:root {
+  color-scheme: dark;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --color-background: #f3f5f8;
+  --color-surface: #ffffff;
+  --color-surface-2: #f1f4f8;
+  --color-surface-3: #e7ebf1;
+  --color-border: #e2e7ee;
+  --color-border-strong: #cdd4df;
+  --color-foreground: #131a26;
+  --color-muted: #586573;
+  --color-muted-2: #93a0af;
+  --color-primary: #2f6fe0;
+  --color-primary-hover: #2560c4;
+  --color-long: #0e9f6e;
+  --color-long-soft: #0e9f6e1f;
+  --color-short: #e02424;
+  --color-short-soft: #e024241f;
+  --color-warning: #b8820a;
+  --color-info: #2f6fe0;
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+  html,
+  body {
+    height: 100%;
+  }
+  body {
+    background: var(--color-background);
+    color: var(--color-foreground);
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .nums {
+    font-variant-numeric: tabular-nums;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-border-strong);
+    border-radius: 9999px;
+    border: 2px solid var(--color-background);
+  }
+}
