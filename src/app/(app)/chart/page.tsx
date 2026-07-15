@@ -2,9 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  createChart, CandlestickSeries, createSeriesMarkers, ColorType, CrosshairMode,
+  createChart, CandlestickSeries, LineSeries, createSeriesMarkers, ColorType, CrosshairMode, LineStyle,
   type IChartApi, type ISeriesApi, type UTCTimestamp, type SeriesMarker, type Time,
-  type ISeriesMarkersPluginApi,
+  type ISeriesMarkersPluginApi, type MouseEventParams,
 } from "lightweight-charts";
 import { api, type Candle, type Signal } from "@/lib/api";
 import { generateDemoCandles } from "@/lib/demo-candles";
@@ -23,6 +23,19 @@ const DESC: Record<string, string> = { ES: "S&P 500 · CME", NQ: "Nasdaq 100 · 
 const TFS = [{ label: "1m", res: 60 }, { label: "5m", res: 300 }, { label: "15m", res: 900 }, { label: "1h", res: 3600 }, { label: "1D", res: 86400 }];
 const price = (n: number) => parseFloat(n.toFixed(2)).toLocaleString("en-US");
 const dateOf = (ms: number) => new Date(ms).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+
+// A trade reduced to its exact chart coordinates — used for the hover connector + tooltip.
+interface TradePoint {
+  id: string;
+  side: "LONG" | "SHORT";
+  entry: number;
+  exit: number | null;
+  pnl: number | null;
+  unrealizedPnl: number | null;
+  status: "active" | "closed";
+  entryTime: UTCTimestamp;
+  exitTime: UTCTimestamp | null;
+}
 
 export default function ChartPage() {
   const [symbol, setSymbol] = useState("NQ");
@@ -82,13 +95,29 @@ export default function ChartPage() {
     return out.sort((a, b) => (a.time as number) - (b.time as number));
   }, [symbolSignals, res]);
 
+  // Exact per-trade coordinates for the hover connector/tooltip (snapped to the resolution grid).
+  const tradePoints = useMemo<TradePoint[]>(() => {
+    const snap = (ms: number) => (Math.floor(ms / 1000 / res) * res) as UTCTimestamp;
+    return symbolSignals.map((s) => ({
+      id: s.id,
+      side: s.side,
+      entry: s.entry,
+      exit: s.exit,
+      pnl: s.pnl,
+      unrealizedPnl: s.unrealizedPnl,
+      status: s.status,
+      entryTime: snap(s.openedAt),
+      exitTime: s.closedAt != null ? snap(s.closedAt) : null,
+    }));
+  }, [symbolSignals, res]);
+
   const closedForSymbol = useMemo(() => symbolSignals.filter((s) => s.status === "closed").sort((a, b) => (b.closedAt ?? 0) - (a.closedAt ?? 0)), [symbolSignals]);
 
   return (
     <div>
       <div className="mb-4">
         <h1 className="text-xl font-semibold">Chart</h1>
-        <p className="text-sm text-muted">Live signals · entries &amp; exits marked on the chart</p>
+        <p className="text-sm text-muted">Live signals · hover a trade to see its entry, exit &amp; profit</p>
       </div>
 
       <Card className="overflow-hidden p-3">
@@ -108,7 +137,7 @@ export default function ChartPage() {
           </div>
         </div>
         <div className="relative">
-          <ChartCanvas candles={displayCandles} markers={markers} />
+          <ChartCanvas candles={displayCandles} markers={markers} trades={tradePoints} />
           {usingDemo && (
             <div className="pointer-events-none absolute left-2 top-2 rounded-md border border-border bg-surface-2/80 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted backdrop-blur">
               Demo data
@@ -155,11 +184,19 @@ export default function ChartPage() {
   );
 }
 
-function ChartCanvas({ candles, markers }: { candles: Candle[]; markers: SeriesMarker<Time>[] }) {
+// Pixel radius within which the crosshair "grabs" a trade's entry/exit point.
+const HOVER_RADIUS = 20;
+
+function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers: SeriesMarker<Time>[]; trades: TradePoint[] }) {
   const ref = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  const lineRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const tradesRef = useRef<TradePoint[]>(trades);
+  const [tip, setTip] = useState<{ x: number; y: number; t: TradePoint } | null>(null);
+
+  useEffect(() => { tradesRef.current = trades; }, [trades]);
 
   useEffect(() => {
     if (!ref.current) return;
@@ -176,19 +213,107 @@ function ChartCanvas({ candles, markers }: { candles: Candle[]; markers: SeriesM
     const series = chart.addSeries(CandlestickSeries, {
       upColor: "#16c784", downColor: "#ea3943", borderVisible: false, wickUpColor: "#16c784", wickDownColor: "#ea3943",
     });
+    // Thin dashed connector drawn between a hovered trade's exact entry & exit prices.
+    // Empty until a trade is hovered. Dots mark the precise entry/exit price points.
+    const line = chart.addSeries(LineSeries, {
+      color: "#9aa7bd", lineWidth: 1, lineStyle: LineStyle.Dashed,
+      lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false,
+      pointMarkersVisible: true, pointMarkersRadius: 3,
+    });
     chartRef.current = chart;
     seriesRef.current = series;
+    lineRef.current = line;
     markersRef.current = createSeriesMarkers(series, [] as SeriesMarker<Time>[]);
-    return () => { chart.remove(); chartRef.current = null; seriesRef.current = null; markersRef.current = null; };
+
+    // Hover: find the trade whose exact entry or exit point is nearest the crosshair;
+    // if within HOVER_RADIUS, draw the entry→exit connector and show the detail tooltip.
+    const onMove = (param: MouseEventParams) => {
+      const pt = param.point;
+      const cs = seriesRef.current;
+      if (!pt || !cs) { line.setData([]); setTip(null); return; }
+      const ts = chart.timeScale();
+      let best: { t: TradePoint; d: number; x: number; y: number } | null = null;
+      for (const t of tradesRef.current) {
+        const pointsToCheck: Array<[UTCTimestamp, number]> = [[t.entryTime, t.entry]];
+        if (t.exitTime != null && t.exit != null) pointsToCheck.push([t.exitTime, t.exit]);
+        for (const [tt, pv] of pointsToCheck) {
+          const x = ts.timeToCoordinate(tt);
+          const y = cs.priceToCoordinate(pv);
+          if (x == null || y == null) continue;
+          const d = Math.hypot(x - pt.x, y - pt.y);
+          if (d < HOVER_RADIUS && (!best || d < best.d)) best = { t, d, x, y };
+        }
+      }
+      if (!best) { line.setData([]); setTip(null); return; }
+      const t = best.t;
+      if (t.exitTime != null && t.exit != null && t.exitTime !== t.entryTime) {
+        const pts = [
+          { time: t.entryTime, value: t.entry },
+          { time: t.exitTime, value: t.exit },
+        ].sort((a, b) => (a.time as number) - (b.time as number));
+        line.setData(pts);
+      } else {
+        line.setData([]);
+      }
+      setTip({ x: best.x, y: best.y, t });
+    };
+    chart.subscribeCrosshairMove(onMove);
+
+    return () => {
+      chart.unsubscribeCrosshairMove(onMove);
+      chart.remove();
+      chartRef.current = null; seriesRef.current = null; markersRef.current = null; lineRef.current = null;
+    };
   }, []);
 
   useEffect(() => {
     if (!seriesRef.current) return;
     seriesRef.current.setData(candles.map((c) => ({ time: c.time as UTCTimestamp, open: c.open, high: c.high, low: c.low, close: c.close })));
+    lineRef.current?.setData([]); // clear any stale connector on data change
+    setTip(null);
     if (candles.length) chartRef.current?.timeScale().fitContent();
   }, [candles]);
 
   useEffect(() => { markersRef.current?.setMarkers(markers); }, [markers]);
 
-  return <div ref={ref} style={{ width: "100%", height: 440 }} />;
+  return (
+    <div style={{ position: "relative", width: "100%", height: 440 }}>
+      <div ref={ref} style={{ position: "absolute", inset: 0 }} />
+      {tip && <HoverTip tip={tip} width={ref.current?.clientWidth ?? 0} />}
+    </div>
+  );
+}
+
+function HoverTip({ tip, width }: { tip: { x: number; y: number; t: TradePoint }; width: number }) {
+  const t = tip.t;
+  const isLong = t.side === "LONG";
+  const profit = t.status === "closed" ? t.pnl : t.unrealizedPnl;
+  const W = 176;
+  const left = Math.min(Math.max(8, tip.x + 14), Math.max(8, width - W - 8));
+  const top = Math.max(8, tip.y - 12);
+  return (
+    <div className="pointer-events-none absolute z-20 rounded-lg border border-border bg-surface/95 p-2.5 text-xs shadow-lg backdrop-blur" style={{ left, top, width: W }}>
+      <div className="mb-1.5 flex items-center justify-between">
+        <span className={cn("font-semibold", isLong ? "text-info" : "text-short")}>{isLong ? "↑ Long" : "↓ Short"}</span>
+        <span className="text-[10px] uppercase tracking-wide text-muted-2">{t.status === "closed" ? "Closed" : "Open"}</span>
+      </div>
+      <TipRow label="Entry" value={price(t.entry)} />
+      <TipRow label="Exit" value={t.exit != null ? price(t.exit) : t.status === "active" ? "Open" : "—"} />
+      <div className="mt-1.5 flex items-center justify-between border-t border-border/60 pt-1.5">
+        <span className="text-muted">{t.status === "closed" ? "Profit" : "Open P&L"}</span>
+        <span className={cn("nums font-semibold", (profit ?? 0) >= 0 ? "text-long" : "text-short")}>
+          {profit != null ? formatCurrency(profit) : "—"}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function TipRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between">
+      <span className="text-muted">{label}</span>
+      <span className="nums">{value}</span>
+    </div>
+  );
 }
