@@ -194,6 +194,7 @@ function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers:
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const lineRef = useRef<ISeriesApi<"Line"> | null>(null);
   const tradesRef = useRef<TradePoint[]>(trades);
+  const closeAtRef = useRef<Map<number, number>>(new Map()); // bar time → close, for anchoring the connector
   const [tip, setTip] = useState<{ x: number; y: number; t: TradePoint } | null>(null);
 
   useEffect(() => { tradesRef.current = trades; }, [trades]);
@@ -232,13 +233,18 @@ function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers:
       const cs = seriesRef.current;
       if (!pt || !cs) { line.setData([]); setTip(null); return; }
       const ts = chart.timeScale();
+      // The connector rides the PRICE ACTION: anchor each end to the candle close at
+      // that bar (so it sits by the arrows), not the signal's absolute price — with
+      // synthetic demo candles the real price wouldn't fall on the candles and the
+      // line would float away. The tooltip still shows the exact real entry/exit.
+      const closeAt = closeAtRef.current;
+      const anchor = (tt: UTCTimestamp, fallback: number) => closeAt.get(tt as number) ?? fallback;
       // Match by TIME COLUMN: hovering anywhere in a trade's bar strip triggers it,
-      // because the arrow you hover sits above/below the candle, not on the exact
-      // price point. Column proximity (dx) dominates; vertical distance only breaks ties.
+      // because the arrow you hover sits above/below the candle. dx dominates; dy tiebreaks.
       let best: { t: TradePoint; score: number; x: number; y: number } | null = null;
       for (const t of tradesRef.current) {
-        const candidates: Array<[UTCTimestamp, number]> = [[t.entryTime, t.entry]];
-        if (t.exitTime != null && t.exit != null) candidates.push([t.exitTime, t.exit]);
+        const candidates: Array<[UTCTimestamp, number]> = [[t.entryTime, anchor(t.entryTime, t.entry)]];
+        if (t.exitTime != null && t.exit != null) candidates.push([t.exitTime, anchor(t.exitTime, t.exit)]);
         for (const [tt, pv] of candidates) {
           const x = ts.timeToCoordinate(tt);
           if (x == null) continue;
@@ -254,8 +260,8 @@ function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers:
       const t = best.t;
       if (t.exitTime != null && t.exit != null && t.exitTime !== t.entryTime) {
         const pts = [
-          { time: t.entryTime, value: t.entry },
-          { time: t.exitTime, value: t.exit },
+          { time: t.entryTime, value: anchor(t.entryTime, t.entry) },
+          { time: t.exitTime, value: anchor(t.exitTime, t.exit) },
         ].sort((a, b) => (a.time as number) - (b.time as number));
         line.setData(pts);
       } else {
@@ -275,6 +281,9 @@ function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers:
   useEffect(() => {
     if (!seriesRef.current) return;
     seriesRef.current.setData(candles.map((c) => ({ time: c.time as UTCTimestamp, open: c.open, high: c.high, low: c.low, close: c.close })));
+    const m = new Map<number, number>();
+    for (const c of candles) m.set(c.time, c.close);
+    closeAtRef.current = m;
     lineRef.current?.setData([]); // clear any stale connector on data change
     setTip(null);
     if (candles.length) chartRef.current?.timeScale().fitContent();
