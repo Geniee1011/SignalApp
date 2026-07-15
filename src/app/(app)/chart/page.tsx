@@ -66,14 +66,16 @@ export default function ChartPage() {
     const out: SeriesMarker<Time>[] = [];
     for (const s of symbolSignals) {
       const isLong = s.side === "LONG";
-      // One mark per trade — the entry arrow only, colored by side (green long /
-      // red short), no text. Exits are intentionally NOT drawn: showing both entry
-      // and exit doubled the marks and read as chaotic. The trades table below the
-      // chart lists every exit price, so no information is lost.
+      // One mark per trade — the entry arrow only, no text. Colored with an accent
+      // pair that is DISTINCT from the candle palette (blue long / amber short) so
+      // the markers read as their own layer instead of blending into the green/red
+      // candles. Direction is also clear from the arrow + above/below placement.
+      // Exits aren't drawn (the trades table lists every exit price), keeping one
+      // clean mark per trade.
       out.push({
         time: snap(s.openedAt),
         position: isLong ? "belowBar" : "aboveBar",
-        color: isLong ? "#16c784" : "#ea3943",
+        color: isLong ? "#3b82f6" : "#f5a623",
         shape: isLong ? "arrowUp" : "arrowDown",
       });
     }
@@ -116,8 +118,8 @@ export default function ChartPage() {
           {!loading && displayCandles.length === 0 && <div className="absolute inset-0 flex items-center justify-center text-sm text-muted">Market data temporarily unavailable</div>}
         </div>
         <div className="mt-2.5 flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-[11px] text-muted">
-          <span className="inline-flex items-center gap-1"><span style={{ color: "#16c784" }}>▲</span> Long entry</span>
-          <span className="inline-flex items-center gap-1"><span style={{ color: "#ea3943" }}>▼</span> Short entry</span>
+          <span className="inline-flex items-center gap-1"><span style={{ color: "#3b82f6" }}>▲</span> Long entry</span>
+          <span className="inline-flex items-center gap-1"><span style={{ color: "#f5a623" }}>▼</span> Short entry</span>
         </div>
       </Card>
 
