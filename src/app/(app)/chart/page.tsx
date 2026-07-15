@@ -66,19 +66,16 @@ export default function ChartPage() {
     const out: SeriesMarker<Time>[] = [];
     for (const s of symbolSignals) {
       const isLong = s.side === "LONG";
-      // Entry: a single arrow, colored by side (green long / red short). No text
-      // label — the shape + color reads cleanly even with many signals on screen,
-      // which is what made the old labelled markers look chaotic.
+      // One mark per trade — the entry arrow only, colored by side (green long /
+      // red short), no text. Exits are intentionally NOT drawn: showing both entry
+      // and exit doubled the marks and read as chaotic. The trades table below the
+      // chart lists every exit price, so no information is lost.
       out.push({
         time: snap(s.openedAt),
         position: isLong ? "belowBar" : "aboveBar",
         color: isLong ? "#16c784" : "#ea3943",
         shape: isLong ? "arrowUp" : "arrowDown",
       });
-      // Exit: a subtle neutral dot, no label.
-      if (s.status === "closed" && s.closedAt != null) {
-        out.push({ time: snap(s.closedAt), position: "inBar", color: "#7787a0", shape: "circle" });
-      }
     }
     return out.sort((a, b) => (a.time as number) - (b.time as number));
   }, [symbolSignals, res]);
@@ -121,7 +118,6 @@ export default function ChartPage() {
         <div className="mt-2.5 flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-[11px] text-muted">
           <span className="inline-flex items-center gap-1"><span style={{ color: "#16c784" }}>▲</span> Long entry</span>
           <span className="inline-flex items-center gap-1"><span style={{ color: "#ea3943" }}>▼</span> Short entry</span>
-          <span className="inline-flex items-center gap-1"><span style={{ color: "#7787a0" }}>●</span> Exit</span>
         </div>
       </Card>
 
