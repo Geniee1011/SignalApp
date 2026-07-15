@@ -184,8 +184,8 @@ export default function ChartPage() {
   );
 }
 
-// Pixel radius within which the crosshair "grabs" a trade's entry/exit point.
-const HOVER_RADIUS = 20;
+// Horizontal pixels within which the crosshair "grabs" a trade's time column.
+const HOVER_RADIUS = 22;
 
 function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers: SeriesMarker<Time>[]; trades: TradePoint[] }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -216,9 +216,9 @@ function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers:
     // Thin dashed connector drawn between a hovered trade's exact entry & exit prices.
     // Empty until a trade is hovered. Dots mark the precise entry/exit price points.
     const line = chart.addSeries(LineSeries, {
-      color: "#9aa7bd", lineWidth: 1, lineStyle: LineStyle.Dashed,
+      color: "#cbd5e1", lineWidth: 2, lineStyle: LineStyle.Dashed,
       lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false,
-      pointMarkersVisible: true, pointMarkersRadius: 3,
+      pointMarkersVisible: true, pointMarkersRadius: 4,
     });
     chartRef.current = chart;
     seriesRef.current = series;
@@ -232,16 +232,22 @@ function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers:
       const cs = seriesRef.current;
       if (!pt || !cs) { line.setData([]); setTip(null); return; }
       const ts = chart.timeScale();
-      let best: { t: TradePoint; d: number; x: number; y: number } | null = null;
+      // Match by TIME COLUMN: hovering anywhere in a trade's bar strip triggers it,
+      // because the arrow you hover sits above/below the candle, not on the exact
+      // price point. Column proximity (dx) dominates; vertical distance only breaks ties.
+      let best: { t: TradePoint; score: number; x: number; y: number } | null = null;
       for (const t of tradesRef.current) {
-        const pointsToCheck: Array<[UTCTimestamp, number]> = [[t.entryTime, t.entry]];
-        if (t.exitTime != null && t.exit != null) pointsToCheck.push([t.exitTime, t.exit]);
-        for (const [tt, pv] of pointsToCheck) {
+        const candidates: Array<[UTCTimestamp, number]> = [[t.entryTime, t.entry]];
+        if (t.exitTime != null && t.exit != null) candidates.push([t.exitTime, t.exit]);
+        for (const [tt, pv] of candidates) {
           const x = ts.timeToCoordinate(tt);
+          if (x == null) continue;
+          const dx = Math.abs(x - pt.x);
+          if (dx > HOVER_RADIUS) continue; // must be within this trade's time column
           const y = cs.priceToCoordinate(pv);
-          if (x == null || y == null) continue;
-          const d = Math.hypot(x - pt.x, y - pt.y);
-          if (d < HOVER_RADIUS && (!best || d < best.d)) best = { t, d, x, y };
+          const dy = y == null ? 0 : Math.abs(y - pt.y);
+          const score = dx * 4 + dy * 0.15;
+          if (!best || score < best.score) best = { t, score, x, y: y ?? pt.y };
         }
       }
       if (!best) { line.setData([]); setTip(null); return; }
