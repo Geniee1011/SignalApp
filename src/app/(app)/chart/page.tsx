@@ -195,6 +195,7 @@ function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers:
   const lineRef = useRef<ISeriesApi<"Line"> | null>(null);
   const tradesRef = useRef<TradePoint[]>(trades);
   const closeAtRef = useRef<Map<number, number>>(new Map()); // bar time → close, for anchoring the connector
+  const hoverIdRef = useRef<string | null>(null); // currently-hovered trade id (dedupe re-renders / recursion)
   const [tip, setTip] = useState<{ x: number; y: number; t: TradePoint } | null>(null);
 
   useEffect(() => { tradesRef.current = trades; }, [trades]);
@@ -226,48 +227,39 @@ function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers:
     lineRef.current = line;
     markersRef.current = createSeriesMarkers(series, [] as SeriesMarker<Time>[]);
 
-    // Hover: find the trade whose exact entry or exit point is nearest the crosshair;
-    // if within HOVER_RADIUS, draw the entry→exit connector and show the detail tooltip.
+    // Hover: find the trade whose time column the crosshair is over, and stash it in
+    // state. IMPORTANT: this handler must NOT mutate any series (e.g. line.setData) —
+    // doing so re-fires the crosshair event synchronously and recurses until the stack
+    // blows. The connector is drawn from state in a separate effect below. We also
+    // early-return unless the hovered trade actually changed, to avoid churn.
     const onMove = (param: MouseEventParams) => {
       const pt = param.point;
       const cs = seriesRef.current;
-      if (!pt || !cs) { line.setData([]); setTip(null); return; }
-      const ts = chart.timeScale();
-      // The connector rides the PRICE ACTION: anchor each end to the candle close at
-      // that bar (so it sits by the arrows), not the signal's absolute price — with
-      // synthetic demo candles the real price wouldn't fall on the candles and the
-      // line would float away. The tooltip still shows the exact real entry/exit.
-      const closeAt = closeAtRef.current;
-      const anchor = (tt: UTCTimestamp, fallback: number) => closeAt.get(tt as number) ?? fallback;
-      // Match by TIME COLUMN: hovering anywhere in a trade's bar strip triggers it,
-      // because the arrow you hover sits above/below the candle. dx dominates; dy tiebreaks.
-      let best: { t: TradePoint; score: number; x: number; y: number } | null = null;
-      for (const t of tradesRef.current) {
-        const candidates: Array<[UTCTimestamp, number]> = [[t.entryTime, anchor(t.entryTime, t.entry)]];
-        if (t.exitTime != null && t.exit != null) candidates.push([t.exitTime, anchor(t.exitTime, t.exit)]);
-        for (const [tt, pv] of candidates) {
-          const x = ts.timeToCoordinate(tt);
-          if (x == null) continue;
-          const dx = Math.abs(x - pt.x);
-          if (dx > HOVER_RADIUS) continue; // must be within this trade's time column
-          const y = cs.priceToCoordinate(pv);
-          const dy = y == null ? 0 : Math.abs(y - pt.y);
-          const score = dx * 4 + dy * 0.15;
-          if (!best || score < best.score) best = { t, score, x, y: y ?? pt.y };
+      let best: { t: TradePoint; x: number; y: number } | null = null;
+      if (pt && cs) {
+        const ts = chart.timeScale();
+        const closeAt = closeAtRef.current;
+        const anchor = (tt: UTCTimestamp, fallback: number) => closeAt.get(tt as number) ?? fallback;
+        let bestScore = Infinity;
+        for (const t of tradesRef.current) {
+          const candidates: Array<[UTCTimestamp, number]> = [[t.entryTime, anchor(t.entryTime, t.entry)]];
+          if (t.exitTime != null && t.exit != null) candidates.push([t.exitTime, anchor(t.exitTime, t.exit)]);
+          for (const [tt, pv] of candidates) {
+            const x = ts.timeToCoordinate(tt);
+            if (x == null) continue;
+            const dx = Math.abs(x - pt.x);
+            if (dx > HOVER_RADIUS) continue; // must be within this trade's time column
+            const y = cs.priceToCoordinate(pv);
+            const dy = y == null ? 0 : Math.abs(y - pt.y);
+            const score = dx * 4 + dy * 0.15;
+            if (score < bestScore) { bestScore = score; best = { t, x, y: y ?? pt.y }; }
+          }
         }
       }
-      if (!best) { line.setData([]); setTip(null); return; }
-      const t = best.t;
-      if (t.exitTime != null && t.exit != null && t.exitTime !== t.entryTime) {
-        const pts = [
-          { time: t.entryTime, value: anchor(t.entryTime, t.entry) },
-          { time: t.exitTime, value: anchor(t.exitTime, t.exit) },
-        ].sort((a, b) => (a.time as number) - (b.time as number));
-        line.setData(pts);
-      } else {
-        line.setData([]);
-      }
-      setTip({ x: best.x, y: best.y, t });
+      const id = best ? best.t.id : null;
+      if (id === hoverIdRef.current) return; // nothing changed — skip the re-render
+      hoverIdRef.current = id;
+      setTip(best ? { x: best.x, y: best.y, t: best.t } : null);
     };
     chart.subscribeCrosshairMove(onMove);
 
@@ -284,12 +276,32 @@ function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers:
     const m = new Map<number, number>();
     for (const c of candles) m.set(c.time, c.close);
     closeAtRef.current = m;
-    lineRef.current?.setData([]); // clear any stale connector on data change
-    setTip(null);
+    hoverIdRef.current = null;
+    setTip(null); // clears the connector via the effect below
     if (candles.length) chartRef.current?.timeScale().fitContent();
   }, [candles]);
 
   useEffect(() => { markersRef.current?.setMarkers(markers); }, [markers]);
+
+  // Draw/clear the entry→exit connector from the hovered trade. Done in an effect
+  // (after render) — NOT inside the crosshair handler — so mutating the line series
+  // can't re-enter the handler and recurse.
+  useEffect(() => {
+    const line = lineRef.current;
+    if (!line) return;
+    const t = tip?.t;
+    if (t && t.exitTime != null && t.exit != null && t.exitTime !== t.entryTime) {
+      const closeAt = closeAtRef.current;
+      const anchor = (tt: UTCTimestamp, fallback: number) => closeAt.get(tt as number) ?? fallback;
+      const pts = [
+        { time: t.entryTime, value: anchor(t.entryTime, t.entry) },
+        { time: t.exitTime, value: anchor(t.exitTime, t.exit) },
+      ].sort((a, b) => (a.time as number) - (b.time as number));
+      line.setData(pts);
+    } else {
+      line.setData([]);
+    }
+  }, [tip]);
 
   return (
     <div style={{ position: "relative", width: "100%", height: 440 }}>
