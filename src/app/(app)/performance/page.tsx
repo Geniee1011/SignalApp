@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type Performance } from "@/lib/api";
 import { getToken } from "@/store/auth-store";
 import { Card, Stat } from "@/components/ui";
@@ -37,7 +37,8 @@ export default function PerformancePage() {
   useEffect(() => { void load(); }, [load]);
 
   const markets = useMemo(() => data?.byMarket.map((m) => m.market) ?? [], [data]);
-  const maxMarketN = useMemo(() => Math.max(1, ...(data?.byMarket.map((m) => m.n) ?? [1])), [data]);
+  const byProfit = useMemo(() => [...(data?.byMarket ?? [])].sort((a, b) => b.pnl - a.pnl), [data]);
+  const maxAbsPnl = useMemo(() => Math.max(1, ...(data?.byMarket.map((m) => Math.abs(m.pnl)) ?? [1])), [data]);
 
   return (
     <div>
@@ -84,22 +85,28 @@ export default function PerformancePage() {
             </Card>
 
             <Card className="p-4 lg:col-span-2">
-              <div className="mb-3 text-sm font-medium">Win Rate by Market</div>
+              <div className="mb-3 text-sm font-medium">Profit by Market</div>
               <div className="space-y-2.5">
-                {data.byMarket.map((m) => (
-                  <div key={m.market}>
-                    <div className="mb-1 flex items-baseline justify-between text-xs">
-                      <span className="font-medium text-foreground">{m.market} <span className="text-muted-2">· {m.n}</span></span>
-                      <span className="nums text-muted">{m.winRate.toFixed(0)}%</span>
+                {byProfit.map((m) => {
+                  const pos = m.pnl >= 0;
+                  const w = Math.max(2, (Math.abs(m.pnl) / maxAbsPnl) * 100);
+                  return (
+                    <div key={m.market}>
+                      <div className="mb-1 flex items-baseline justify-between text-xs">
+                        <span className="font-medium text-foreground">{m.market} <span className="text-muted-2">· {m.n}</span></span>
+                        <span className={cn("nums font-medium", pos ? "text-long" : "text-short")}>
+                          {formatCurrency(m.pnl)} <span className="font-normal text-muted-2">· {pos ? "+" : ""}{(m.pnl / risk).toFixed(1)}R</span>
+                        </span>
+                      </div>
+                      <div className="h-2 overflow-hidden rounded-full bg-surface-3">
+                        <div className={cn("h-full rounded-full", pos ? "bg-long" : "bg-short")} style={{ width: `${w}%` }} />
+                      </div>
                     </div>
-                    <div className="h-2 overflow-hidden rounded-full bg-surface-3">
-                      <div className="h-full rounded-full bg-primary" style={{ width: `${Math.min(100, m.winRate)}%` }} />
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
                 {data.byMarket.length === 0 && <div className="py-6 text-center text-sm text-muted">No trades.</div>}
               </div>
-              <div className="mt-3 text-[10px] text-muted-2">Bar = win rate · number = trades</div>
+              <div className="mt-3 text-[10px] text-muted-2">Bar = profit · number = trades · R at ${risk} risk</div>
             </Card>
           </div>
 
@@ -150,29 +157,70 @@ export default function PerformancePage() {
 }
 
 function EquityChart({ points }: { points: { day: string; value: number }[] }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [hover, setHover] = useState<number | null>(null);
+
   if (points.length === 0) return <div className="flex h-48 items-center justify-center text-sm text-muted">No data yet</div>;
+
   const values = points.map((p) => p.value);
   const min = Math.min(0, ...values);
   const max = Math.max(0, ...values);
   const span = max - min || 1;
   const W = 100, H = 100;
-  const x = (i: number) => (points.length === 1 ? W / 2 : (i / (points.length - 1)) * W);
+  const n = points.length;
+  const x = (i: number) => (n === 1 ? W / 2 : (i / (n - 1)) * W);
   const y = (v: number) => H - ((v - min) / span) * H;
   const line = points.map((p, i) => `${x(i).toFixed(2)},${y(p.value).toFixed(2)}`).join(" ");
   const area = `0,${y(min).toFixed(2)} ${line} ${W},${y(min).toFixed(2)}`;
+
+  // Map a client X to the nearest data-point index (chart is stretched, so use the rect).
+  const pick = (clientX: number) => {
+    const el = ref.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const frac = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    setHover(Math.round(frac * (n - 1)));
+  };
+
+  const hp = hover != null ? points[hover]! : null;
+  const hx = hp ? x(hover!) : 0; // 0-100 → percent
+  const hy = hp ? y(hp.value) : 0; // 0-100 → percent
+  const tipLeft = Math.min(86, Math.max(14, hx));
+
   return (
     <div>
-      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: "100%", height: 220 }}>
-        <defs>
-          <linearGradient id="eq" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="var(--color-primary)" stopOpacity="0.35" />
-            <stop offset="100%" stopColor="var(--color-primary)" stopOpacity="0" />
-          </linearGradient>
-        </defs>
-        <polygon points={area} fill="url(#eq)" />
-        <polyline points={line} fill="none" stroke="var(--color-primary)" strokeWidth="1.6" vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
-      </svg>
-      <div className="mt-1 flex justify-between text-[10px] text-muted-2"><span>{points[0]!.day}</span><span>{points[points.length - 1]!.day}</span></div>
+      <div
+        ref={ref}
+        className="relative touch-none"
+        style={{ height: 220 }}
+        onMouseMove={(e) => pick(e.clientX)}
+        onMouseLeave={() => setHover(null)}
+        onTouchStart={(e) => pick(e.touches[0]!.clientX)}
+        onTouchMove={(e) => pick(e.touches[0]!.clientX)}
+      >
+        <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: "100%", height: "100%", display: "block" }}>
+          <defs>
+            <linearGradient id="eq" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="var(--color-primary)" stopOpacity="0.35" />
+              <stop offset="100%" stopColor="var(--color-primary)" stopOpacity="0" />
+            </linearGradient>
+          </defs>
+          <polygon points={area} fill="url(#eq)" />
+          <polyline points={line} fill="none" stroke="var(--color-primary)" strokeWidth="1.6" vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
+        </svg>
+
+        {hp && (
+          <>
+            <div className="pointer-events-none absolute inset-y-0 w-px bg-primary/50" style={{ left: `${hx}%` }} />
+            <div className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-surface bg-primary" style={{ left: `${hx}%`, top: `${hy}%` }} />
+            <div className="pointer-events-none absolute top-2 z-10 -translate-x-1/2 whitespace-nowrap rounded-md border border-border bg-surface px-2 py-1 text-center shadow-lg" style={{ left: `${tipLeft}%` }}>
+              <div className={cn("nums text-sm font-semibold", hp.value >= 0 ? "text-long" : "text-short")}>{formatCurrency(hp.value)}</div>
+              <div className="text-[10px] text-muted">{hp.day}</div>
+            </div>
+          </>
+        )}
+      </div>
+      <div className="mt-1 flex justify-between text-[10px] text-muted-2"><span>{points[0]!.day}</span><span>{points[n - 1]!.day}</span></div>
     </div>
   );
 }
