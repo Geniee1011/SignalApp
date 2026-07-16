@@ -43,23 +43,6 @@ export interface AccessConfig {
   suspended: boolean; // feed cut entirely
 }
 
-export type MarketStatus = "active" | "in_play" | "standby";
-
-export interface DashboardMarket {
-  market: string;
-  name: string;
-  exchange: string;
-  status: MarketStatus;
-  conviction: number; // 0-100
-  bias: "Breakout" | "Reversal" | null;
-  activeSignal: Signal | null;
-}
-
-export interface Dashboard {
-  markets: DashboardMarket[];
-  generatedAt: number;
-}
-
 export interface AdminUser {
   id: string;
   email: string;
@@ -102,7 +85,6 @@ export const api = {
     req<{ token: string; user: SignalUser }>("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),
   me: (token: string) => req<{ user: SignalUser }>("/api/auth/me", {}, token),
   signals: (token: string, hours = 24) => req<Signal[]>(`/api/signals?hours=${hours}`, {}, token),
-  dashboard: (token: string) => req<Dashboard>("/api/dashboard", {}, token),
   performance: (token: string, params: { sinceMs?: number; market?: string } = {}) => {
     const q = new URLSearchParams();
     if (params.sinceMs) q.set("since", String(params.sinceMs));

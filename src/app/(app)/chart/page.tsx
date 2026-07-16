@@ -79,18 +79,25 @@ export default function ChartPage() {
     const out: SeriesMarker<Time>[] = [];
     for (const s of symbolSignals) {
       const isLong = s.side === "LONG";
-      // One mark per trade — the entry arrow only, no text. Colored with an accent
-      // pair that is DISTINCT from the candle palette (blue long / amber short) so
-      // the markers read as their own layer instead of blending into the green/red
-      // candles. Direction is also clear from the arrow + above/below placement.
-      // Exits aren't drawn (the trades table lists every exit price), keeping one
-      // clean mark per trade.
+      // Entry: an arrow colored by side (blue long / amber short) — distinct from the
+      // green/red candle palette, no text. Direction is clear from the arrow + placement.
       out.push({
         time: snap(s.openedAt),
         position: isLong ? "belowBar" : "aboveBar",
         color: isLong ? "#3b82f6" : "#f5a623",
         shape: isLong ? "arrowUp" : "arrowDown",
       });
+      // Exit: a bright cyan circle at the close bar, so BOTH ends of a trade are
+      // clearly visible. Distinct shape + a color that's off the entry blue/amber and
+      // the candle green/red, so it pops without clashing. Clicking draws the connector.
+      if (s.status === "closed" && s.closedAt != null) {
+        out.push({
+          time: snap(s.closedAt),
+          position: "inBar",
+          color: "#22d3ee",
+          shape: "circle",
+        });
+      }
     }
     return out.sort((a, b) => (a.time as number) - (b.time as number));
   }, [symbolSignals, res]);
@@ -117,7 +124,7 @@ export default function ChartPage() {
     <div>
       <div className="mb-4">
         <h1 className="text-xl font-semibold">Chart</h1>
-        <p className="text-sm text-muted">Live signals · hover a trade to see its entry, exit &amp; profit</p>
+        <p className="text-sm text-muted">Live signals · click a trade to see its entry, exit &amp; profit</p>
       </div>
 
       <Card className="overflow-hidden p-3">
@@ -149,6 +156,7 @@ export default function ChartPage() {
         <div className="mt-2.5 flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-[11px] text-muted">
           <span className="inline-flex items-center gap-1"><span style={{ color: "#3b82f6" }}>▲</span> Long entry</span>
           <span className="inline-flex items-center gap-1"><span style={{ color: "#f5a623" }}>▼</span> Short entry</span>
+          <span className="inline-flex items-center gap-1"><span style={{ color: "#22d3ee" }}>●</span> Exit</span>
         </div>
       </Card>
 
@@ -184,8 +192,8 @@ export default function ChartPage() {
   );
 }
 
-// Horizontal pixels within which the crosshair "grabs" a trade's time column.
-const HOVER_RADIUS = 22;
+// Horizontal pixels within which a click selects a trade's time column.
+const CLICK_RADIUS = 22;
 
 function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers: SeriesMarker<Time>[]; trades: TradePoint[] }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -195,7 +203,6 @@ function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers:
   const lineRef = useRef<ISeriesApi<"Line"> | null>(null);
   const tradesRef = useRef<TradePoint[]>(trades);
   const closeAtRef = useRef<Map<number, number>>(new Map()); // bar time → close, for anchoring the connector
-  const hoverIdRef = useRef<string | null>(null); // currently-hovered trade id (dedupe re-renders / recursion)
   const [tip, setTip] = useState<{ x: number; y: number; t: TradePoint } | null>(null);
 
   useEffect(() => { tradesRef.current = trades; }, [trades]);
@@ -227,12 +234,10 @@ function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers:
     lineRef.current = line;
     markersRef.current = createSeriesMarkers(series, [] as SeriesMarker<Time>[]);
 
-    // Hover: find the trade whose time column the crosshair is over, and stash it in
-    // state. IMPORTANT: this handler must NOT mutate any series (e.g. line.setData) —
-    // doing so re-fires the crosshair event synchronously and recurses until the stack
-    // blows. The connector is drawn from state in a separate effect below. We also
-    // early-return unless the hovered trade actually changed, to avoid churn.
-    const onMove = (param: MouseEventParams) => {
+    // CLICK a trade's marker (entry/exit) to pin its connector + detail tooltip.
+    // Hovering does nothing — the detail shows only on an explicit click, stays
+    // pinned, and clicking the same trade again (or empty space) dismisses it.
+    const onClick = (param: MouseEventParams) => {
       const pt = param.point;
       const cs = seriesRef.current;
       let best: { t: TradePoint; x: number; y: number } | null = null;
@@ -248,7 +253,7 @@ function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers:
             const x = ts.timeToCoordinate(tt);
             if (x == null) continue;
             const dx = Math.abs(x - pt.x);
-            if (dx > HOVER_RADIUS) continue; // must be within this trade's time column
+            if (dx > CLICK_RADIUS) continue; // must be within this trade's time column
             const y = cs.priceToCoordinate(pv);
             const dy = y == null ? 0 : Math.abs(y - pt.y);
             const score = dx * 4 + dy * 0.15;
@@ -256,15 +261,14 @@ function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers:
           }
         }
       }
-      const id = best ? best.t.id : null;
-      if (id === hoverIdRef.current) return; // nothing changed — skip the re-render
-      hoverIdRef.current = id;
-      setTip(best ? { x: best.x, y: best.y, t: best.t } : null);
+      if (!best) { setTip(null); return; } // clicked empty space → dismiss
+      const b = best;
+      setTip((prev) => (prev && prev.t.id === b.t.id ? null : { x: b.x, y: b.y, t: b.t }));
     };
-    chart.subscribeCrosshairMove(onMove);
+    chart.subscribeClick(onClick);
 
     return () => {
-      chart.unsubscribeCrosshairMove(onMove);
+      chart.unsubscribeClick(onClick);
       chart.remove();
       chartRef.current = null; seriesRef.current = null; markersRef.current = null; lineRef.current = null;
     };
@@ -276,7 +280,6 @@ function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers:
     const m = new Map<number, number>();
     for (const c of candles) m.set(c.time, c.close);
     closeAtRef.current = m;
-    hoverIdRef.current = null;
     setTip(null); // clears the connector via the effect below
     if (candles.length) chartRef.current?.timeScale().fitContent();
   }, [candles]);

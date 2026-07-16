@@ -8,7 +8,6 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { cn } from "@/lib/utils";
 
 const NAV = [
-  { href: "/dashboard", label: "Dashboard" },
   { href: "/signals", label: "Signals" },
   { href: "/performance", label: "Performance" },
   { href: "/automation", label: "Automation" },
