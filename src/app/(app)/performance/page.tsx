@@ -16,6 +16,12 @@ const RANGES = [
 const price = (n: number) => parseFloat(n.toFixed(2)).toLocaleString("en-US");
 const dateOf = (ms: number) => new Date(ms).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 
+// The demo P&L is normalized to this reference risk to derive each trade's FIXED
+// R-multiple (a trade's R is a property of its price move vs. its stop, not of your
+// sizing). Dollar figures then scale as (your risk ÷ this), so Profit, Max DD, the
+// per-market $, and the equity curve all respond to the Risk/trade input.
+const REF_RISK = 500;
+
 export default function PerformancePage() {
   const [data, setData] = useState<Performance | null>(null);
   const [loading, setLoading] = useState(true);
@@ -39,8 +45,10 @@ export default function PerformancePage() {
   const markets = useMemo(() => data?.byMarket.map((m) => m.market) ?? [], [data]);
   const byProfit = useMemo(() => [...(data?.byMarket ?? [])].sort((a, b) => b.pnl - a.pnl), [data]);
   const maxAbsPnl = useMemo(() => Math.max(1, ...(data?.byMarket.map((m) => Math.abs(m.pnl)) ?? [1])), [data]);
-  // Average R per trade = mean P&L / risk-per-trade → responds live to the Risk input.
-  const avgR = useMemo(() => (data && data.totalTrades ? data.totalPnl / data.totalTrades / risk : 0), [data, risk]);
+  // Average R per trade — the strategy's fixed R-multiple (independent of your sizing).
+  const avgR = useMemo(() => (data && data.totalTrades ? data.totalPnl / data.totalTrades / REF_RISK : 0), [data]);
+  // Dollars scale with the user's risk-per-trade: 1R = $risk.
+  const scale = risk / REF_RISK;
 
   return (
     <div>
@@ -71,19 +79,19 @@ export default function PerformancePage() {
           <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
             <Stat label="Win Rate" value={`${data.winRate.toFixed(0)}%`} tone="long" />
             <Stat label="Total Trades" value={data.totalTrades} />
-            <Stat label="Profit" value={formatCurrency(data.totalPnl)} tone={data.totalPnl >= 0 ? "long" : "short"} />
+            <Stat label="Profit" value={formatCurrency(data.totalPnl * scale)} tone={data.totalPnl >= 0 ? "long" : "short"} />
             <Stat label="Profit Factor" value={data.profitFactor.toFixed(2)} />
             <Stat label="Avg R" value={`${avgR >= 0 ? "+" : ""}${avgR.toFixed(1)}R`} tone={avgR >= 0 ? "long" : "short"} />
-            <Stat label="Max DD" value={formatCurrency(-data.maxDrawdown)} tone="short" />
+            <Stat label="Max DD" value={formatCurrency(-data.maxDrawdown * scale)} tone="short" />
           </div>
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-5">
             <Card className="p-4 lg:col-span-3">
               <div className="mb-2 flex items-center justify-between">
                 <div className="text-sm font-medium">Equity Curve</div>
-                <div className={cn("nums text-sm font-medium", data.totalPnl >= 0 ? "text-long" : "text-short")}>{formatCurrency(data.totalPnl)}</div>
+                <div className={cn("nums text-sm font-medium", data.totalPnl >= 0 ? "text-long" : "text-short")}>{formatCurrency(data.totalPnl * scale)}</div>
               </div>
-              <EquityChart points={data.equityCurve} />
+              <EquityChart points={data.equityCurve.map((p) => ({ ...p, value: p.value * scale }))} />
             </Card>
 
             <Card className="p-4 lg:col-span-2">
@@ -97,7 +105,7 @@ export default function PerformancePage() {
                       <div className="mb-1 flex items-baseline justify-between text-xs">
                         <span className="font-medium text-foreground">{m.market} <span className="text-muted-2">· {m.n}</span></span>
                         <span className={cn("nums font-medium", pos ? "text-long" : "text-short")}>
-                          {formatCurrency(m.pnl)} <span className="font-normal text-muted-2">· {pos ? "+" : ""}{(m.pnl / risk).toFixed(1)}R</span>
+                          {formatCurrency(m.pnl * scale)} <span className="font-normal text-muted-2">· {pos ? "+" : ""}{(m.pnl / REF_RISK).toFixed(1)}R</span>
                         </span>
                       </div>
                       <div className="h-2 overflow-hidden rounded-full bg-surface-3">
@@ -108,7 +116,7 @@ export default function PerformancePage() {
                 })}
                 {data.byMarket.length === 0 && <div className="py-6 text-center text-sm text-muted">No trades.</div>}
               </div>
-              <div className="mt-3 text-[10px] text-muted-2">Bar = profit · number = trades · R at ${risk} risk</div>
+              <div className="mt-3 text-[10px] text-muted-2">Bar = profit · number = trades · $ at ${risk}/trade</div>
             </Card>
           </div>
 
@@ -128,7 +136,7 @@ export default function PerformancePage() {
                 </thead>
                 <tbody>
                   {data.recent.map((s) => {
-                    const r = (s.pnl ?? 0) / risk;
+                    const r = (s.pnl ?? 0) / REF_RISK;
                     const winTrade = (s.pnl ?? 0) >= 0;
                     return (
                       <tr key={s.id} className="border-b border-border/60 hover:bg-surface-2">
