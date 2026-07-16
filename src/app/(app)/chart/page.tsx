@@ -79,25 +79,16 @@ export default function ChartPage() {
     const out: SeriesMarker<Time>[] = [];
     for (const s of symbolSignals) {
       const isLong = s.side === "LONG";
-      // Entry: an arrow colored by side (blue long / amber short) — distinct from the
-      // green/red candle palette, no text. Direction is clear from the arrow + placement.
+      // Only ENTRY markers are drawn by default (arrow by side, blue long / amber
+      // short). A trade's exit is revealed on demand — hover or click that trade and
+      // its connector shows the exit (cyan end-dot) — so every exit isn't scattered
+      // across the whole chart at once.
       out.push({
         time: snap(s.openedAt),
         position: isLong ? "belowBar" : "aboveBar",
         color: isLong ? "#3b82f6" : "#f5a623",
         shape: isLong ? "arrowUp" : "arrowDown",
       });
-      // Exit: a bright cyan circle at the close bar, so BOTH ends of a trade are
-      // clearly visible. Distinct shape + a color that's off the entry blue/amber and
-      // the candle green/red, so it pops without clashing. Clicking draws the connector.
-      if (s.status === "closed" && s.closedAt != null) {
-        out.push({
-          time: snap(s.closedAt),
-          position: "inBar",
-          color: "#22d3ee",
-          shape: "circle",
-        });
-      }
     }
     return out.sort((a, b) => (a.time as number) - (b.time as number));
   }, [symbolSignals, res]);
@@ -124,7 +115,7 @@ export default function ChartPage() {
     <div>
       <div className="mb-4">
         <h1 className="text-xl font-semibold">Chart</h1>
-        <p className="text-sm text-muted">Live signals · click a trade to see its entry, exit &amp; profit</p>
+        <p className="text-sm text-muted">Live signals · hover a trade to reveal its exit · click for full details</p>
       </div>
 
       <Card className="overflow-hidden p-3">
@@ -205,8 +196,10 @@ function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers:
   const tradesRef = useRef<TradePoint[]>(trades);
   const closeAtRef = useRef<Map<number, number>>(new Map()); // bar time → close, for anchoring the connector
   const tipRef = useRef<{ x: number; y: number; t: TradePoint } | null>(null);
+  const hoverIdRef = useRef<string | null>(null);
   const redrawRef = useRef<() => void>(() => {});
   const [tip, setTip] = useState<{ x: number; y: number; t: TradePoint } | null>(null);
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [connector, setConnector] = useState<Connector | null>(null);
 
   useEffect(() => { tradesRef.current = trades; }, [trades]);
@@ -230,59 +223,69 @@ function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers:
     seriesRef.current = series;
     markersRef.current = createSeriesMarkers(series, [] as SeriesMarker<Time>[]);
 
-    // Compute the pinned trade's entry→exit endpoints in PIXELS and hand them to an
-    // SVG overlay above the chart — a chart LineSeries gets painted over by the
-    // candles, so it draws on top of them here instead. Re-run on pan/zoom/resize.
+    // The "active" trade to visualise is the pinned (clicked) one, else the hovered
+    // one. Its entry→exit connector is drawn as an SVG overlay ABOVE the candles (a
+    // chart series would be painted over by them). Re-run on pan/zoom/resize.
     const redraw = () => {
-      const cs = seriesRef.current, t = tipRef.current?.t;
-      if (!cs || !t || t.exitTime == null || t.exit == null || t.exitTime === t.entryTime) { setConnector(null); return; }
+      const cs = seriesRef.current;
+      const active = tipRef.current?.t ?? tradesRef.current.find((t) => t.id === hoverIdRef.current) ?? null;
+      if (!cs || !active || active.exitTime == null || active.exit == null || active.exitTime === active.entryTime) { setConnector(null); return; }
       const ts = chart.timeScale();
       const closeAt = closeAtRef.current;
       const av = (tt: UTCTimestamp, fb: number) => closeAt.get(tt as number) ?? fb;
-      const x1 = ts.timeToCoordinate(t.entryTime), y1 = cs.priceToCoordinate(av(t.entryTime, t.entry));
-      const x2 = ts.timeToCoordinate(t.exitTime), y2 = cs.priceToCoordinate(av(t.exitTime, t.exit));
+      const x1 = ts.timeToCoordinate(active.entryTime), y1 = cs.priceToCoordinate(av(active.entryTime, active.entry));
+      const x2 = ts.timeToCoordinate(active.exitTime), y2 = cs.priceToCoordinate(av(active.exitTime, active.exit));
       if (x1 == null || y1 == null || x2 == null || y2 == null) { setConnector(null); return; }
-      setConnector({ x1, y1, x2, y2, side: t.side });
+      setConnector({ x1, y1, x2, y2, side: active.side });
     };
     redrawRef.current = redraw;
     chart.timeScale().subscribeVisibleLogicalRangeChange(redraw);
     const ro = new ResizeObserver(() => redraw());
     ro.observe(ref.current);
 
-    // CLICK a trade's marker (entry/exit) to pin its connector + detail tooltip.
-    // Hovering does nothing — the detail shows only on an explicit click, stays
-    // pinned, and clicking the same trade again (or empty space) dismisses it.
-    const onClick = (param: MouseEventParams) => {
-      const pt = param.point;
-      const cs = seriesRef.current;
+    // Find the trade whose entry/exit time-column the cursor is over (or null).
+    const detectTrade = (param: MouseEventParams): { t: TradePoint; x: number; y: number } | null => {
+      const pt = param.point, cs = seriesRef.current;
+      if (!pt || !cs) return null;
+      const ts = chart.timeScale();
+      const closeAt = closeAtRef.current;
+      const anchor = (tt: UTCTimestamp, fb: number) => closeAt.get(tt as number) ?? fb;
       let best: { t: TradePoint; x: number; y: number } | null = null;
-      if (pt && cs) {
-        const ts = chart.timeScale();
-        const closeAt = closeAtRef.current;
-        const anchor = (tt: UTCTimestamp, fallback: number) => closeAt.get(tt as number) ?? fallback;
-        let bestScore = Infinity;
-        for (const t of tradesRef.current) {
-          const candidates: Array<[UTCTimestamp, number]> = [[t.entryTime, anchor(t.entryTime, t.entry)]];
-          if (t.exitTime != null && t.exit != null) candidates.push([t.exitTime, anchor(t.exitTime, t.exit)]);
-          for (const [tt, pv] of candidates) {
-            const x = ts.timeToCoordinate(tt);
-            if (x == null) continue;
-            const dx = Math.abs(x - pt.x);
-            if (dx > CLICK_RADIUS) continue; // must be within this trade's time column
-            const y = cs.priceToCoordinate(pv);
-            const dy = y == null ? 0 : Math.abs(y - pt.y);
-            const score = dx * 4 + dy * 0.15;
-            if (score < bestScore) { bestScore = score; best = { t, x, y: y ?? pt.y }; }
-          }
+      let bestScore = Infinity;
+      for (const t of tradesRef.current) {
+        const candidates: Array<[UTCTimestamp, number]> = [[t.entryTime, anchor(t.entryTime, t.entry)]];
+        if (t.exitTime != null && t.exit != null) candidates.push([t.exitTime, anchor(t.exitTime, t.exit)]);
+        for (const [tt, pv] of candidates) {
+          const x = ts.timeToCoordinate(tt);
+          if (x == null) continue;
+          const dx = Math.abs(x - pt.x);
+          if (dx > CLICK_RADIUS) continue; // must be within this trade's time column
+          const y = cs.priceToCoordinate(pv);
+          const dy = y == null ? 0 : Math.abs(y - pt.y);
+          const score = dx * 4 + dy * 0.15;
+          if (score < bestScore) { bestScore = score; best = { t, x, y: y ?? pt.y }; }
         }
       }
-      if (!best) { setTip(null); return; } // clicked empty space → dismiss
+      return best;
+    };
+
+    // HOVER a trade → preview its exit connector (line + cyan exit dot). No dialog.
+    const onMove = (param: MouseEventParams) => {
+      const id = detectTrade(param)?.t.id ?? null;
+      if (id !== hoverIdRef.current) { hoverIdRef.current = id; setHoveredId(id); }
+    };
+    // CLICK a trade → pin its full detail dialog (toggle off on re-click / empty click).
+    const onClick = (param: MouseEventParams) => {
+      const best = detectTrade(param);
+      if (!best) { setTip(null); return; }
       const b = best;
       setTip((prev) => (prev && prev.t.id === b.t.id ? null : { x: b.x, y: b.y, t: b.t }));
     };
+    chart.subscribeCrosshairMove(onMove);
     chart.subscribeClick(onClick);
 
     return () => {
+      chart.unsubscribeCrosshairMove(onMove);
       chart.unsubscribeClick(onClick);
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(redraw);
       ro.disconnect();
@@ -303,8 +306,8 @@ function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers:
 
   useEffect(() => { markersRef.current?.setMarkers(markers); }, [markers]);
 
-  // Keep tipRef in sync and redraw the SVG connector whenever the pinned trade changes.
-  useEffect(() => { tipRef.current = tip; redrawRef.current(); }, [tip]);
+  // Keep refs in sync and redraw the SVG connector whenever the pinned OR hovered trade changes.
+  useEffect(() => { tipRef.current = tip; hoverIdRef.current = hoveredId; redrawRef.current(); }, [tip, hoveredId]);
 
   return (
     <div style={{ position: "relative", width: "100%", height: 440 }}>
