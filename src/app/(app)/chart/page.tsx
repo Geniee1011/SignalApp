@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  createChart, CandlestickSeries, LineSeries, createSeriesMarkers, ColorType, CrosshairMode, LineStyle,
+  createChart, CandlestickSeries, createSeriesMarkers, ColorType, CrosshairMode,
   type IChartApi, type ISeriesApi, type UTCTimestamp, type SeriesMarker, type Time,
   type ISeriesMarkersPluginApi, type MouseEventParams,
 } from "lightweight-charts";
@@ -195,15 +195,19 @@ export default function ChartPage() {
 // Horizontal pixels within which a click selects a trade's time column.
 const CLICK_RADIUS = 22;
 
+interface Connector { x1: number; y1: number; x2: number; y2: number; side: "LONG" | "SHORT" }
+
 function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers: SeriesMarker<Time>[]; trades: TradePoint[] }) {
   const ref = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
-  const lineRef = useRef<ISeriesApi<"Line"> | null>(null);
   const tradesRef = useRef<TradePoint[]>(trades);
   const closeAtRef = useRef<Map<number, number>>(new Map()); // bar time → close, for anchoring the connector
+  const tipRef = useRef<{ x: number; y: number; t: TradePoint } | null>(null);
+  const redrawRef = useRef<() => void>(() => {});
   const [tip, setTip] = useState<{ x: number; y: number; t: TradePoint } | null>(null);
+  const [connector, setConnector] = useState<Connector | null>(null);
 
   useEffect(() => { tradesRef.current = trades; }, [trades]);
 
@@ -222,17 +226,28 @@ function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers:
     const series = chart.addSeries(CandlestickSeries, {
       upColor: "#16c784", downColor: "#ea3943", borderVisible: false, wickUpColor: "#16c784", wickDownColor: "#ea3943",
     });
-    // Thin dashed connector drawn between a hovered trade's exact entry & exit prices.
-    // Empty until a trade is hovered. Dots mark the precise entry/exit price points.
-    const line = chart.addSeries(LineSeries, {
-      color: "#cbd5e1", lineWidth: 2, lineStyle: LineStyle.Dashed,
-      lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false,
-      pointMarkersVisible: true, pointMarkersRadius: 4,
-    });
     chartRef.current = chart;
     seriesRef.current = series;
-    lineRef.current = line;
     markersRef.current = createSeriesMarkers(series, [] as SeriesMarker<Time>[]);
+
+    // Compute the pinned trade's entry→exit endpoints in PIXELS and hand them to an
+    // SVG overlay above the chart — a chart LineSeries gets painted over by the
+    // candles, so it draws on top of them here instead. Re-run on pan/zoom/resize.
+    const redraw = () => {
+      const cs = seriesRef.current, t = tipRef.current?.t;
+      if (!cs || !t || t.exitTime == null || t.exit == null || t.exitTime === t.entryTime) { setConnector(null); return; }
+      const ts = chart.timeScale();
+      const closeAt = closeAtRef.current;
+      const av = (tt: UTCTimestamp, fb: number) => closeAt.get(tt as number) ?? fb;
+      const x1 = ts.timeToCoordinate(t.entryTime), y1 = cs.priceToCoordinate(av(t.entryTime, t.entry));
+      const x2 = ts.timeToCoordinate(t.exitTime), y2 = cs.priceToCoordinate(av(t.exitTime, t.exit));
+      if (x1 == null || y1 == null || x2 == null || y2 == null) { setConnector(null); return; }
+      setConnector({ x1, y1, x2, y2, side: t.side });
+    };
+    redrawRef.current = redraw;
+    chart.timeScale().subscribeVisibleLogicalRangeChange(redraw);
+    const ro = new ResizeObserver(() => redraw());
+    ro.observe(ref.current);
 
     // CLICK a trade's marker (entry/exit) to pin its connector + detail tooltip.
     // Hovering does nothing — the detail shows only on an explicit click, stays
@@ -269,8 +284,10 @@ function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers:
 
     return () => {
       chart.unsubscribeClick(onClick);
+      chart.timeScale().unsubscribeVisibleLogicalRangeChange(redraw);
+      ro.disconnect();
       chart.remove();
-      chartRef.current = null; seriesRef.current = null; markersRef.current = null; lineRef.current = null;
+      chartRef.current = null; seriesRef.current = null; markersRef.current = null;
     };
   }, []);
 
@@ -286,29 +303,22 @@ function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers:
 
   useEffect(() => { markersRef.current?.setMarkers(markers); }, [markers]);
 
-  // Draw/clear the entry→exit connector from the hovered trade. Done in an effect
-  // (after render) — NOT inside the crosshair handler — so mutating the line series
-  // can't re-enter the handler and recurse.
-  useEffect(() => {
-    const line = lineRef.current;
-    if (!line) return;
-    const t = tip?.t;
-    if (t && t.exitTime != null && t.exit != null && t.exitTime !== t.entryTime) {
-      const closeAt = closeAtRef.current;
-      const anchor = (tt: UTCTimestamp, fallback: number) => closeAt.get(tt as number) ?? fallback;
-      const pts = [
-        { time: t.entryTime, value: anchor(t.entryTime, t.entry) },
-        { time: t.exitTime, value: anchor(t.exitTime, t.exit) },
-      ].sort((a, b) => (a.time as number) - (b.time as number));
-      line.setData(pts);
-    } else {
-      line.setData([]);
-    }
-  }, [tip]);
+  // Keep tipRef in sync and redraw the SVG connector whenever the pinned trade changes.
+  useEffect(() => { tipRef.current = tip; redrawRef.current(); }, [tip]);
 
   return (
     <div style={{ position: "relative", width: "100%", height: 440 }}>
       <div ref={ref} style={{ position: "absolute", inset: 0 }} />
+      {connector && (
+        <svg className="pointer-events-none absolute inset-0 z-10" width="100%" height="100%">
+          <line
+            x1={connector.x1} y1={connector.y1} x2={connector.x2} y2={connector.y2}
+            stroke="#e2e8f0" strokeWidth="1.5" strokeDasharray="5 3" strokeLinecap="round"
+          />
+          <circle cx={connector.x1} cy={connector.y1} r="3.5" fill={connector.side === "LONG" ? "#3b82f6" : "#f5a623"} stroke="#0b0f17" strokeWidth="1" />
+          <circle cx={connector.x2} cy={connector.y2} r="3.5" fill="#22d3ee" stroke="#0b0f17" strokeWidth="1" />
+        </svg>
+      )}
       {tip && <HoverTip tip={tip} width={ref.current?.clientWidth ?? 0} />}
     </div>
   );
@@ -319,8 +329,11 @@ function HoverTip({ tip, width }: { tip: { x: number; y: number; t: TradePoint }
   const isLong = t.side === "LONG";
   const profit = t.status === "closed" ? t.pnl : t.unrealizedPnl;
   const W = 176;
-  const left = Math.min(Math.max(8, tip.x + 14), Math.max(8, width - W - 8));
-  const top = Math.max(8, tip.y - 12);
+  // Pin the dialog to the TOP corner opposite the clicked trade, so it never covers
+  // the connector line or the entry/exit markers.
+  const onRight = tip.x < width / 2; // trade on the left half → dialog on the right
+  const left = onRight ? Math.max(8, width - W - 8) : 8;
+  const top = 8;
   return (
     <div className="pointer-events-none absolute z-20 rounded-lg border border-border bg-surface/95 p-2.5 text-xs shadow-lg backdrop-blur" style={{ left, top, width: W }}>
       <div className="mb-1.5 flex items-center justify-between">
