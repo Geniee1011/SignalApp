@@ -39,6 +39,8 @@ export default function PerformancePage() {
   const markets = useMemo(() => data?.byMarket.map((m) => m.market) ?? [], [data]);
   const byProfit = useMemo(() => [...(data?.byMarket ?? [])].sort((a, b) => b.pnl - a.pnl), [data]);
   const maxAbsPnl = useMemo(() => Math.max(1, ...(data?.byMarket.map((m) => Math.abs(m.pnl)) ?? [1])), [data]);
+  // Average R per trade = mean P&L / risk-per-trade → responds live to the Risk input.
+  const avgR = useMemo(() => (data && data.totalTrades ? data.totalPnl / data.totalTrades / risk : 0), [data, risk]);
 
   return (
     <div>
@@ -71,7 +73,7 @@ export default function PerformancePage() {
             <Stat label="Total Trades" value={data.totalTrades} />
             <Stat label="Profit" value={formatCurrency(data.totalPnl)} tone={data.totalPnl >= 0 ? "long" : "short"} />
             <Stat label="Profit Factor" value={data.profitFactor.toFixed(2)} />
-            <Stat label="Avg R:R" value={`${data.avgRR.toFixed(1)}×`} />
+            <Stat label="Avg R" value={`${avgR >= 0 ? "+" : ""}${avgR.toFixed(1)}R`} tone={avgR >= 0 ? "long" : "short"} />
             <Stat label="Max DD" value={formatCurrency(-data.maxDrawdown)} tone="short" />
           </div>
 
