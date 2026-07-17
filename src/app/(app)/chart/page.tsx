@@ -201,24 +201,40 @@ function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers:
   const [tip, setTip] = useState<{ x: number; y: number; t: TradePoint } | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [connector, setConnector] = useState<Connector | null>(null);
+  const [isLight, setIsLight] = useState(false); // theme, for the SVG overlay colors
 
   useEffect(() => { tradesRef.current = trades; }, [trades]);
 
   useEffect(() => {
     if (!ref.current) return;
-    const light = document.documentElement.getAttribute("data-theme") === "light";
-    const grid = light ? "#eef1f6" : "#1a2130";
     const chart = createChart(ref.current, {
       autoSize: true,
-      layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: light ? "#586573" : "#8a97ad" },
-      grid: { vertLines: { color: grid }, horzLines: { color: grid } },
-      rightPriceScale: { borderColor: light ? "#e2e7ee" : "#243049" },
-      timeScale: { borderColor: light ? "#e2e7ee" : "#243049", timeVisible: true, secondsVisible: false },
+      layout: { background: { type: ColorType.Solid, color: "transparent" } },
+      timeScale: { timeVisible: true, secondsVisible: false },
       crosshair: { mode: CrosshairMode.Normal },
     });
     const series = chart.addSeries(CandlestickSeries, {
       upColor: "#16c784", downColor: "#ea3943", borderVisible: false, wickUpColor: "#16c784", wickDownColor: "#ea3943",
     });
+
+    // Chart colors are baked into canvas options, so they do NOT follow CSS theme
+    // changes. Re-apply them whenever `data-theme` flips — otherwise the chart keeps
+    // the theme it was built with (e.g. near-white gridlines left over on dark mode).
+    const applyTheme = () => {
+      const light = document.documentElement.getAttribute("data-theme") === "light";
+      const grid = light ? "#eef1f6" : "#1a2130";
+      const border = light ? "#e2e7ee" : "#243049";
+      chart.applyOptions({
+        layout: { textColor: light ? "#586573" : "#8a97ad" },
+        grid: { vertLines: { color: grid }, horzLines: { color: grid } },
+        rightPriceScale: { borderColor: border },
+        timeScale: { borderColor: border },
+      });
+      setIsLight(light);
+    };
+    applyTheme();
+    const themeObserver = new MutationObserver(applyTheme);
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
     chartRef.current = chart;
     seriesRef.current = series;
     markersRef.current = createSeriesMarkers(series, [] as SeriesMarker<Time>[]);
@@ -288,6 +304,7 @@ function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers:
       chart.unsubscribeCrosshairMove(onMove);
       chart.unsubscribeClick(onClick);
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(redraw);
+      themeObserver.disconnect();
       ro.disconnect();
       chart.remove();
       chartRef.current = null; seriesRef.current = null; markersRef.current = null;
@@ -316,18 +333,18 @@ function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers:
         <svg className="pointer-events-none absolute inset-0 z-10" width="100%" height="100%">
           <line
             x1={connector.x1} y1={connector.y1} x2={connector.x2} y2={connector.y2}
-            stroke="#e2e8f0" strokeWidth="1.5" strokeDasharray="5 3" strokeLinecap="round"
+            stroke={isLight ? "#334155" : "#e2e8f0"} strokeWidth="1.5" strokeDasharray="5 3" strokeLinecap="round"
           />
-          <circle cx={connector.x1} cy={connector.y1} r="3.5" fill={connector.side === "LONG" ? "#3b82f6" : "#f5a623"} stroke="#0b0f17" strokeWidth="1" />
-          <circle cx={connector.x2} cy={connector.y2} r="3.5" fill="#22d3ee" stroke="#0b0f17" strokeWidth="1" />
+          <circle cx={connector.x1} cy={connector.y1} r="3.5" fill={connector.side === "LONG" ? "#3b82f6" : "#f5a623"} stroke={isLight ? "#ffffff" : "#0b0f17"} strokeWidth="1" />
+          <circle cx={connector.x2} cy={connector.y2} r="3.5" fill="#22d3ee" stroke={isLight ? "#ffffff" : "#0b0f17"} strokeWidth="1" />
         </svg>
       )}
-      {tip && <HoverTip tip={tip} width={ref.current?.clientWidth ?? 0} />}
+      {tip && <HoverTip tip={tip} width={ref.current?.clientWidth ?? 0} onClose={() => setTip(null)} />}
     </div>
   );
 }
 
-function HoverTip({ tip, width }: { tip: { x: number; y: number; t: TradePoint }; width: number }) {
+function HoverTip({ tip, width, onClose }: { tip: { x: number; y: number; t: TradePoint }; width: number; onClose: () => void }) {
   const t = tip.t;
   const isLong = t.side === "LONG";
   const profit = t.status === "closed" ? t.pnl : t.unrealizedPnl;
@@ -339,9 +356,22 @@ function HoverTip({ tip, width }: { tip: { x: number; y: number; t: TradePoint }
   const top = 8;
   return (
     <div className="pointer-events-none absolute z-20 rounded-lg border border-border bg-surface/95 p-2.5 text-xs shadow-lg backdrop-blur" style={{ left, top, width: W }}>
-      <div className="mb-1.5 flex items-center justify-between">
+      <div className="mb-1.5 flex items-center justify-between gap-2">
         <span className={cn("font-semibold", isLong ? "text-info" : "text-short")}>{isLong ? "↑ Long" : "↓ Short"}</span>
-        <span className="text-[10px] uppercase tracking-wide text-muted-2">{t.status === "closed" ? "Closed" : "Open"}</span>
+        <div className="flex items-center gap-1.5">
+          <span className="text-[10px] uppercase tracking-wide text-muted-2">{t.status === "closed" ? "Closed" : "Open"}</span>
+          {/* Only the button takes pointer events — the rest of the dialog stays
+              click-through so it never blocks the chart underneath. */}
+          <button
+            onClick={onClose}
+            aria-label="Close trade details"
+            className="pointer-events-auto -mr-1 flex h-4 w-4 items-center justify-center rounded text-muted-2 transition hover:bg-surface-3 hover:text-foreground"
+          >
+            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
+              <path d="M5 5l14 14M19 5L5 19" />
+            </svg>
+          </button>
+        </div>
       </div>
       <TipRow label="Entry" value={price(t.entry)} />
       <TipRow label="Exit" value={t.exit != null ? price(t.exit) : t.status === "active" ? "Open" : "—"} />
