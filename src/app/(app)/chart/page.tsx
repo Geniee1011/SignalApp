@@ -147,7 +147,7 @@ export default function ChartPage() {
         <div className="mt-2.5 flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-[11px] text-muted">
           <span className="inline-flex items-center gap-1"><span style={{ color: "#3b82f6" }}>▲</span> Long entry</span>
           <span className="inline-flex items-center gap-1"><span style={{ color: "#f5a623" }}>▼</span> Short entry</span>
-          <span className="inline-flex items-center gap-1"><span style={{ color: "#22d3ee" }}>●</span> Exit</span>
+          <span className="inline-flex items-center gap-1"><span className="inline-block h-[2.5px] w-3 rounded-full align-middle" style={{ background: "#22d3ee" }} /> Exit</span>
         </div>
       </Card>
 
@@ -335,8 +335,16 @@ function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers:
             x1={connector.x1} y1={connector.y1} x2={connector.x2} y2={connector.y2}
             stroke={isLight ? "#334155" : "#e2e8f0"} strokeWidth="1.5" strokeDasharray="5 3" strokeLinecap="round"
           />
-          <circle cx={connector.x1} cy={connector.y1} r="3.5" fill={connector.side === "LONG" ? "#3b82f6" : "#f5a623"} stroke={isLight ? "#ffffff" : "#0b0f17"} strokeWidth="1" />
-          <circle cx={connector.x2} cy={connector.y2} r="3.5" fill="#22d3ee" stroke={isLight ? "#ffffff" : "#0b0f17"} strokeWidth="1" />
+          {/* Endpoints as short horizontal ticks (price levels) rather than dots — they
+              stay legible when a trade's entry and exit sit on adjacent bars. */}
+          <line
+            x1={connector.x1 - 6} y1={connector.y1} x2={connector.x1 + 6} y2={connector.y1}
+            stroke={connector.side === "LONG" ? "#3b82f6" : "#f5a623"} strokeWidth="2.5" strokeLinecap="round"
+          />
+          <line
+            x1={connector.x2 - 6} y1={connector.y2} x2={connector.x2 + 6} y2={connector.y2}
+            stroke="#22d3ee" strokeWidth="2.5" strokeLinecap="round"
+          />
         </svg>
       )}
       {tip && <HoverTip tip={tip} width={ref.current?.clientWidth ?? 0} onClose={() => setTip(null)} />}
@@ -349,10 +357,9 @@ function HoverTip({ tip, width, onClose }: { tip: { x: number; y: number; t: Tra
   const isLong = t.side === "LONG";
   const profit = t.status === "closed" ? t.pnl : t.unrealizedPnl;
   const W = 176;
-  // Pin the dialog to the TOP corner opposite the clicked trade, so it never covers
-  // the connector line or the entry/exit markers.
-  const onRight = tip.x < width / 2; // trade on the left half → dialog on the right
-  const left = onRight ? Math.max(8, width - W - 8) : 8;
+  // Fixed at the TOP-RIGHT so the dialog's position is predictable. It's click-through
+  // (only the ✕ takes pointer events), so a trade underneath stays interactive.
+  const left = Math.max(8, width - W - 8);
   const top = 8;
   return (
     <div className="pointer-events-none absolute z-20 rounded-lg border border-border bg-surface/95 p-2.5 text-xs shadow-lg backdrop-blur" style={{ left, top, width: W }}>
