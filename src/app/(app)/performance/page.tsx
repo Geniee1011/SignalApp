@@ -4,17 +4,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type Performance } from "@/lib/api";
 import { getToken } from "@/store/auth-store";
 import { Card, Stat } from "@/components/ui";
+import { DateRangePicker, rangeLabel, ALL_TIME, type DateRange } from "@/components/DateRangePicker";
 import { formatCurrency, cn } from "@/lib/utils";
-
-const RANGES = [
-  { label: "All time", days: 0 },
-  { label: "90D", days: 90 },
-  { label: "30D", days: 30 },
-  { label: "7D", days: 7 },
-];
 
 const price = (n: number) => parseFloat(n.toFixed(2)).toLocaleString("en-US");
 const dateOf = (ms: number) => new Date(ms).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+// Equity-curve keys are "YYYY-MM-DD" — build the Date from parts, since parsing the
+// string would read it as UTC midnight and shift the label a day west of Greenwich.
+const dayOf = (day: string) => {
+  const [y, m, d] = day.split("-").map(Number);
+  return new Date(y!, m! - 1, d!).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+};
 
 // The demo P&L is normalized to this reference risk to derive each trade's FIXED
 // R-multiple (a trade's R is a property of its price move vs. its stop, not of your
@@ -25,20 +25,23 @@ const REF_RISK = 500;
 export default function PerformancePage() {
   const [data, setData] = useState<Performance | null>(null);
   const [loading, setLoading] = useState(true);
-  const [days, setDays] = useState(0);
+  const [range, setRange] = useState<DateRange>(ALL_TIME);
   const [market, setMarket] = useState("");
   const [risk, setRisk] = useState(500); // $ per trade → drives R-multiples
 
+  const { from, to } = range;
   const load = useCallback(async () => {
     const token = getToken();
     if (!token) return;
     setLoading(true);
     try {
-      setData(await api.performance(token, { sinceMs: days === 0 ? 0 : Date.now() - days * 86_400_000, market: market || undefined }));
+      // Every panel below reads from this one response, so the stats, the curve,
+      // the by-market split and the trade list always cover the same dates.
+      setData(await api.performance(token, { sinceMs: from ?? 0, untilMs: to ?? undefined, market: market || undefined }));
     } finally {
       setLoading(false);
     }
-  }, [days, market]);
+  }, [from, to, market]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -55,7 +58,7 @@ export default function PerformancePage() {
       <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold">Performance</h1>
-          <p className="text-sm text-muted">Verified signal track record · {market || "all markets"}</p>
+          <p className="text-sm text-muted">Verified signal track record · {market || "all markets"} · {rangeLabel(range).toLowerCase()}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <label className="flex items-center gap-2 rounded-lg border border-border bg-surface px-3 py-1.5 text-sm">
@@ -66,9 +69,7 @@ export default function PerformancePage() {
             <option value="">All markets</option>
             {markets.map((m) => <option key={m} value={m}>{m}</option>)}
           </select>
-          <select value={days} onChange={(e) => setDays(Number(e.target.value))} className="rounded-lg border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-primary">
-            {RANGES.map((r) => <option key={r.days} value={r.days}>{r.label}</option>)}
-          </select>
+          <DateRangePicker value={range} onChange={setRange} />
         </div>
       </div>
 
@@ -225,12 +226,12 @@ function EquityChart({ points }: { points: { day: string; value: number }[] }) {
             <div className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-surface bg-primary" style={{ left: `${hx}%`, top: `${hy}%` }} />
             <div className="pointer-events-none absolute top-2 z-10 -translate-x-1/2 whitespace-nowrap rounded-md border border-border bg-surface px-2 py-1 text-center shadow-lg" style={{ left: `${tipLeft}%` }}>
               <div className={cn("nums text-sm font-semibold", hp.value >= 0 ? "text-long" : "text-short")}>{formatCurrency(hp.value)}</div>
-              <div className="text-[10px] text-muted">{hp.day}</div>
+              <div className="text-[10px] text-muted">{dayOf(hp.day)}</div>
             </div>
           </>
         )}
       </div>
-      <div className="mt-1 flex justify-between text-[10px] text-muted-2"><span>{points[0]!.day}</span><span>{points[n - 1]!.day}</span></div>
+      <div className="mt-1 flex justify-between text-[10px] text-muted-2"><span>{dayOf(points[0]!.day)}</span><span>{dayOf(points[n - 1]!.day)}</span></div>
     </div>
   );
 }

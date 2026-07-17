@@ -85,9 +85,18 @@ export const api = {
     req<{ token: string; user: SignalUser }>("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),
   me: (token: string) => req<{ user: SignalUser }>("/api/auth/me", {}, token),
   signals: (token: string, hours = 24) => req<Signal[]>(`/api/signals?hours=${hours}`, {}, token),
-  performance: (token: string, params: { sinceMs?: number; market?: string } = {}) => {
+  /** Signals inside an explicit window (the chart's calendar range). */
+  signalsRange: (token: string, sinceMs: number, untilMs?: number) => {
+    const q = new URLSearchParams({ since: String(Math.max(0, Math.round(sinceMs))) });
+    if (untilMs != null) q.set("until", String(Math.round(untilMs)));
+    return req<Signal[]>(`/api/signals?${q.toString()}`, {}, token);
+  },
+  performance: (token: string, params: { sinceMs?: number; untilMs?: number; market?: string } = {}) => {
     const q = new URLSearchParams();
-    if (params.sinceMs) q.set("since", String(params.sinceMs));
+    // `sinceMs: 0` means all time — send it. A truthiness check would drop it and
+    // silently fall back to the backend's 90-day default.
+    if (params.sinceMs != null) q.set("since", String(params.sinceMs));
+    if (params.untilMs != null) q.set("until", String(params.untilMs));
     if (params.market) q.set("market", params.market);
     return req<Performance>(`/api/performance?${q.toString()}`, {}, token);
   },

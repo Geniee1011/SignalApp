@@ -9,8 +9,8 @@ import {
 import { api, type Candle, type Signal } from "@/lib/api";
 import { generateDemoCandles } from "@/lib/demo-candles";
 import { getToken } from "@/store/auth-store";
-import { useSignalsStore } from "@/store/signals-store";
 import { Card } from "@/components/ui";
+import { DateRangePicker, rangeLabel, ALL_TIME, type DateRange } from "@/components/DateRangePicker";
 import { formatCurrency, cn } from "@/lib/utils";
 
 // Design-demo fallback: on unless explicitly disabled. When the live feed returns
@@ -21,6 +21,10 @@ const DEMO_CHART = process.env.NEXT_PUBLIC_DEMO_CHART !== "0";
 const MARKETS = ["ES", "NQ", "YM", "GC", "CL"];
 const DESC: Record<string, string> = { ES: "S&P 500 · CME", NQ: "Nasdaq 100 · CME", YM: "Dow · CBOT", GC: "Gold · COMEX", CL: "Crude Oil · NYMEX" };
 const TFS = [{ label: "1m", res: 60 }, { label: "5m", res: 300 }, { label: "15m", res: 900 }, { label: "1h", res: 3600 }, { label: "1D", res: 86400 }];
+// Bars shown when the range is unbounded, and a hard cap so a wide range on a fine
+// resolution (e.g. 30 days of 1m) doesn't try to draw tens of thousands of candles.
+const DEFAULT_BARS = 300;
+const MAX_BARS = 1500;
 const price = (n: number) => parseFloat(n.toFixed(2)).toLocaleString("en-US");
 const dateOf = (ms: number) => new Date(ms).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 
@@ -40,22 +44,48 @@ interface TradePoint {
 export default function ChartPage() {
   const [symbol, setSymbol] = useState("NQ");
   const [res, setRes] = useState(300);
+  const [range, setRange] = useState<DateRange>(ALL_TIME);
   const [candles, setCandles] = useState<Candle[]>([]);
+  const [signals, setSignals] = useState<Signal[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const { signals, load: loadSignals, connect, disconnect } = useSignalsStore();
-  useEffect(() => { void loadSignals(); connect(); return () => disconnect(); }, [loadSignals, connect, disconnect]);
+  // The visible window: the calendar range, clamped to a sane bar count for the
+  // chosen resolution. Candles AND signals both derive from it, so the markers,
+  // the trades table and the price action always cover the same dates.
+  const { bars, windowStart, windowEnd, live } = useMemo(() => {
+    const end = range.to ?? Date.now();
+    const spanMs = range.from != null ? end - range.from : DEFAULT_BARS * res * 1000;
+    const n = Math.min(Math.max(Math.ceil(spanMs / (res * 1000)), 2), MAX_BARS);
+    return { bars: n, windowStart: end - n * res * 1000, windowEnd: end, live: end >= Date.now() - 60_000 };
+  }, [range, res]);
 
+  // Candles. The backend serves "the last N bars", not an arbitrary range, so only
+  // ask it for a live window — a historical range falls through to the demo series.
   useEffect(() => {
     const token = getToken();
     if (!token) return;
     let cancelled = false;
     setLoading(true);
-    api.chartHistory(token, symbol, res, 300)
-      .then((cs) => { if (!cancelled) { setCandles(cs); setLoading(false); } })
+    const p = live ? api.chartHistory(token, symbol, res, bars) : Promise.resolve<Candle[]>([]);
+    p.then((cs) => { if (!cancelled) { setCandles(cs); setLoading(false); } })
       .catch(() => { if (!cancelled) { setCandles([]); setLoading(false); } });
     return () => { cancelled = true; };
-  }, [symbol, res]);
+  }, [symbol, res, bars, live]);
+
+  // Signals for exactly the window the candles cover.
+  useEffect(() => {
+    const token = getToken();
+    if (!token) return;
+    let cancelled = false;
+    const load = () =>
+      api.signalsRange(token, windowStart, windowEnd)
+        .then((s) => { if (!cancelled) setSignals(s); })
+        .catch(() => { if (!cancelled) setSignals([]); });
+    void load();
+    if (!live) return () => { cancelled = true; };
+    const id = setInterval(load, 5000); // a live window keeps refreshing
+    return () => { cancelled = true; clearInterval(id); };
+  }, [windowStart, windowEnd, live]);
 
   const symbolSignals = useMemo(() => signals.filter((s) => s.market === symbol || s.symbol === symbol), [signals, symbol]);
 
@@ -71,8 +101,8 @@ export default function ChartPage() {
   const displayCandles = useMemo<Candle[]>(() => {
     if (candles.length) return candles;
     if (!DEMO_CHART) return [];
-    return generateDemoCandles(symbol, res, 300, anchorPrice);
-  }, [candles, symbol, res, anchorPrice]);
+    return generateDemoCandles(symbol, res, bars, anchorPrice, windowEnd);
+  }, [candles, symbol, res, bars, anchorPrice, windowEnd]);
 
   const markers = useMemo<SeriesMarker<Time>[]>(() => {
     const snap = (ms: number) => (Math.floor(ms / 1000 / res) * res) as UTCTimestamp;
@@ -118,20 +148,24 @@ export default function ChartPage() {
         <p className="text-sm text-muted">Live signals · hover a trade to reveal its exit · click for full details</p>
       </div>
 
-      <Card className="overflow-hidden p-3">
+      {/* No overflow-hidden here — it would clip the calendar's popover. */}
+      <Card className="p-3">
         <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <select value={symbol} onChange={(e) => setSymbol(e.target.value)} className="rounded-lg border border-border bg-surface-2 px-2.5 py-1 text-sm font-semibold outline-none focus:border-primary">
               {MARKETS.map((m) => <option key={m} value={m}>{m}</option>)}
             </select>
-            <span className="text-xs text-muted">{DESC[symbol] ?? ""} · Today</span>
+            <span className="text-xs text-muted">{DESC[symbol] ?? ""} · {rangeLabel(range)}</span>
           </div>
-          <div className="inline-flex rounded-lg border border-border bg-surface-2 p-0.5">
-            {TFS.map((tf) => (
-              <button key={tf.res} onClick={() => setRes(tf.res)} className={cn("rounded-md px-2.5 py-1 text-xs font-medium", res === tf.res ? "bg-primary text-white" : "text-muted hover:text-foreground")}>
-                {tf.label}
-              </button>
-            ))}
+          <div className="flex flex-wrap items-center gap-2">
+            <DateRangePicker value={range} onChange={setRange} />
+            <div className="inline-flex rounded-lg border border-border bg-surface-2 p-0.5">
+              {TFS.map((tf) => (
+                <button key={tf.res} onClick={() => setRes(tf.res)} className={cn("rounded-md px-2.5 py-1 text-xs font-medium", res === tf.res ? "bg-primary text-white" : "text-muted hover:text-foreground")}>
+                  {tf.label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
         <div className="relative">
@@ -194,7 +228,7 @@ function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers:
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const tradesRef = useRef<TradePoint[]>(trades);
-  const closeAtRef = useRef<Map<number, number>>(new Map()); // bar time → close, for anchoring the connector
+  const barsRef = useRef<Map<number, { o: number; c: number }>>(new Map()); // bar time → open/close, for anchoring
   const tipRef = useRef<{ x: number; y: number; t: TradePoint } | null>(null);
   const hoverIdRef = useRef<string | null>(null);
   const redrawRef = useRef<() => void>(() => {});
@@ -245,12 +279,19 @@ function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers:
     const redraw = () => {
       const cs = seriesRef.current;
       const active = tipRef.current?.t ?? tradesRef.current.find((t) => t.id === hoverIdRef.current) ?? null;
-      if (!cs || !active || active.exitTime == null || active.exit == null || active.exitTime === active.entryTime) { setConnector(null); return; }
+      if (!cs || !active || active.exitTime == null || active.exit == null) { setConnector(null); return; }
       const ts = chart.timeScale();
-      const closeAt = closeAtRef.current;
-      const av = (tt: UTCTimestamp, fb: number) => closeAt.get(tt as number) ?? fb;
-      const x1 = ts.timeToCoordinate(active.entryTime), y1 = cs.priceToCoordinate(av(active.entryTime, active.entry));
-      const x2 = ts.timeToCoordinate(active.exitTime), y2 = cs.priceToCoordinate(av(active.exitTime, active.exit));
+      const bars = barsRef.current;
+      const eb = bars.get(active.entryTime as number);
+      const xb = bars.get(active.exitTime as number);
+      // A trade that opens AND closes inside one bar (duration < timeframe) would
+      // collapse to a single point, since both ends anchor to that bar's close — so
+      // span the bar open→close instead. Without this, short trades drew no line.
+      const sameBar = active.exitTime === active.entryTime;
+      const entryPrice = sameBar ? (eb?.o ?? active.entry) : (eb?.c ?? active.entry);
+      const exitPrice = xb?.c ?? active.exit;
+      const x1 = ts.timeToCoordinate(active.entryTime), y1 = cs.priceToCoordinate(entryPrice);
+      const x2 = ts.timeToCoordinate(active.exitTime), y2 = cs.priceToCoordinate(exitPrice);
       if (x1 == null || y1 == null || x2 == null || y2 == null) { setConnector(null); return; }
       setConnector({ x1, y1, x2, y2, side: active.side });
     };
@@ -264,8 +305,8 @@ function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers:
       const pt = param.point, cs = seriesRef.current;
       if (!pt || !cs) return null;
       const ts = chart.timeScale();
-      const closeAt = closeAtRef.current;
-      const anchor = (tt: UTCTimestamp, fb: number) => closeAt.get(tt as number) ?? fb;
+      const bars = barsRef.current;
+      const anchor = (tt: UTCTimestamp, fb: number) => bars.get(tt as number)?.c ?? fb;
       let best: { t: TradePoint; x: number; y: number } | null = null;
       let bestScore = Infinity;
       for (const t of tradesRef.current) {
@@ -314,9 +355,9 @@ function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers:
   useEffect(() => {
     if (!seriesRef.current) return;
     seriesRef.current.setData(candles.map((c) => ({ time: c.time as UTCTimestamp, open: c.open, high: c.high, low: c.low, close: c.close })));
-    const m = new Map<number, number>();
-    for (const c of candles) m.set(c.time, c.close);
-    closeAtRef.current = m;
+    const m = new Map<number, { o: number; c: number }>();
+    for (const c of candles) m.set(c.time, { o: c.open, c: c.close });
+    barsRef.current = m;
     setTip(null); // clears the connector via the effect below
     if (candles.length) chartRef.current?.timeScale().fitContent();
   }, [candles]);
