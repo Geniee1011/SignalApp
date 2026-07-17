@@ -181,7 +181,7 @@ export default function ChartPage() {
         <div className="mt-2.5 flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-[11px] text-muted">
           <span className="inline-flex items-center gap-1"><span style={{ color: "#3b82f6" }}>▲</span> Long entry</span>
           <span className="inline-flex items-center gap-1"><span style={{ color: "#f5a623" }}>▼</span> Short entry</span>
-          <span className="inline-flex items-center gap-1"><span className="inline-block h-[2.5px] w-3 rounded-full align-middle" style={{ background: "#22d3ee" }} /> Exit</span>
+          <span className="inline-flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full align-middle" style={{ background: "#22d3ee" }} /> Exit</span>
         </div>
       </Card>
 
@@ -220,7 +220,33 @@ export default function ChartPage() {
 // Horizontal pixels within which a click selects a trade's time column.
 const CLICK_RADIUS = 22;
 
-interface Connector { x1: number; y1: number; x2: number; y2: number; side: "LONG" | "SHORT" }
+/* The connector has to stay readable on top of candles, which are themselves
+ * green/red and of every luminance. Two consequences drive the drawing below:
+ *   - Contrast comes from a dark CASING under a bright line (the technique road
+ *     maps use over satellite imagery), not from hue. A thin line in any single
+ *     colour will always vanish against some candle.
+ *   - The line therefore stays neutral, and the win/loss read is carried by the
+ *     P&L pill instead — colouring the line green/red would collide with the very
+ *     candles it has to be legible against. */
+const CHART_H = 440;
+const CASING_W = 5; // dark outline under the 2px line
+const LINE_W = 2; // dataviz spec: 2px lines
+const DOT_R = 4.5; // ≥8px marker
+const RING_W = 2; // dataviz spec: 2px ring so ends survive over any candle
+const DASH = "5 4";
+
+/** Compact signed P&L for the exit pill — cents are noise at chart scale. */
+const pnlLabel = (n: number) => `${n >= 0 ? "+" : "−"}$${Math.abs(n).toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
+/** SVG text can't reflow, so the pill is sized to its label. Deliberately a slight
+ *  over-estimate (~6.6px/glyph at 11px semibold) — spare padding beats an overflow. */
+const pillWidth = (label: string) => Math.round(label.length * 6.6) + 16;
+
+interface Connector {
+  x1: number; y1: number; x2: number; y2: number;
+  side: "LONG" | "SHORT";
+  pnl: number | null;
+  flip: boolean; // exit sits near the right edge → hang the pill to its left
+}
 
 function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers: SeriesMarker<Time>[]; trades: TradePoint[] }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -293,7 +319,10 @@ function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers:
       const x1 = ts.timeToCoordinate(active.entryTime), y1 = cs.priceToCoordinate(entryPrice);
       const x2 = ts.timeToCoordinate(active.exitTime), y2 = cs.priceToCoordinate(exitPrice);
       if (x1 == null || y1 == null || x2 == null || y2 == null) { setConnector(null); return; }
-      setConnector({ x1, y1, x2, y2, side: active.side });
+      const pnl = active.status === "closed" ? active.pnl : active.unrealizedPnl;
+      const w = ref.current?.clientWidth ?? 0;
+      const pillW = pnl != null ? pillWidth(pnlLabel(pnl)) : 0;
+      setConnector({ x1, y1, x2, y2, side: active.side, pnl, flip: x2 + DOT_R + 6 + pillW > w });
     };
     redrawRef.current = redraw;
     chart.timeScale().subscribeVisibleLogicalRangeChange(redraw);
@@ -368,26 +397,44 @@ function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers:
   useEffect(() => { tipRef.current = tip; hoverIdRef.current = hoveredId; redrawRef.current(); }, [tip, hoveredId]);
 
   return (
-    <div style={{ position: "relative", width: "100%", height: 440 }}>
+    <div style={{ position: "relative", width: "100%", height: CHART_H }}>
       <div ref={ref} style={{ position: "absolute", inset: 0 }} />
-      {connector && (
-        <svg className="pointer-events-none absolute inset-0 z-10" width="100%" height="100%">
-          <line
-            x1={connector.x1} y1={connector.y1} x2={connector.x2} y2={connector.y2}
-            stroke={isLight ? "#334155" : "#e2e8f0"} strokeWidth="1.5" strokeDasharray="5 3" strokeLinecap="round"
-          />
-          {/* Endpoints as short horizontal ticks (price levels) rather than dots — they
-              stay legible when a trade's entry and exit sit on adjacent bars. */}
-          <line
-            x1={connector.x1 - 6} y1={connector.y1} x2={connector.x1 + 6} y2={connector.y1}
-            stroke={connector.side === "LONG" ? "#3b82f6" : "#f5a623"} strokeWidth="2.5" strokeLinecap="round"
-          />
-          <line
-            x1={connector.x2 - 6} y1={connector.y2} x2={connector.x2 + 6} y2={connector.y2}
-            stroke="#22d3ee" strokeWidth="2.5" strokeLinecap="round"
-          />
-        </svg>
-      )}
+      {connector && (() => {
+        // Casing is the opposite luminance of the line, so the pair reads on any candle.
+        const casing = isLight ? "rgba(255,255,255,0.95)" : "rgba(2,6,23,0.92)";
+        const ink = isLight ? "#0f172a" : "#f8fafc";
+        const { x1, y1, x2, y2, pnl, flip } = connector;
+        const win = (pnl ?? 0) >= 0;
+        const label = pnl != null ? pnlLabel(pnl) : "";
+        const pw = pillWidth(label);
+        const px = flip ? x2 - DOT_R - 6 - pw : x2 + DOT_R + 6;
+        // An exit against the top/bottom edge would hang the pill outside the pane.
+        const py = Math.max(10, Math.min(CHART_H - 10, y2));
+        return (
+          <svg className="pointer-events-none absolute inset-0 z-10" width="100%" height="100%">
+            {/* Same dash pattern at two widths: each bright dash lands inside its own
+                dark dash, outlining the line instead of sitting flat on the candles. */}
+            <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={casing} strokeWidth={CASING_W} strokeDasharray={DASH} strokeLinecap="round" />
+            <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={ink} strokeWidth={LINE_W} strokeDasharray={DASH} strokeLinecap="round" />
+
+            {/* Entry keeps the side colour of its arrow marker; exit stays cyan. Both
+                get a casing ring so they never dissolve into a same-coloured candle. */}
+            <circle cx={x1} cy={y1} r={DOT_R} fill={connector.side === "LONG" ? "#3b82f6" : "#f5a623"} stroke={casing} strokeWidth={RING_W} />
+            <circle cx={x2} cy={y2} r={DOT_R} fill="#22d3ee" stroke={casing} strokeWidth={RING_W} />
+
+            {/* Outcome rides the pill, not the line — white on a filled swatch clears
+                contrast, and keeps green/red off the stroke that crosses the candles. */}
+            {pnl != null && (
+              <g>
+                <rect x={px} y={py - 9} width={pw} height={18} rx={9} fill={win ? "#16c784" : "#ea3943"} stroke={casing} strokeWidth={RING_W} />
+                <text x={px + pw / 2} y={py} textAnchor="middle" dominantBaseline="central" fill="#ffffff" fontSize={11} fontWeight={600}>
+                  {label}
+                </text>
+              </g>
+            )}
+          </svg>
+        );
+      })()}
       {tip && <HoverTip tip={tip} width={ref.current?.clientWidth ?? 0} onClose={() => setTip(null)} />}
     </div>
   );
