@@ -20,11 +20,18 @@ const DEMO_CHART = process.env.NEXT_PUBLIC_DEMO_CHART !== "0";
 
 const MARKETS = ["ES", "NQ", "YM", "GC", "CL"];
 const DESC: Record<string, string> = { ES: "S&P 500 · CME", NQ: "Nasdaq 100 · CME", YM: "Dow · CBOT", GC: "Gold · COMEX", CL: "Crude Oil · NYMEX" };
+// Ordered finest → coarsest; `fitsSpan` relies on that to pick the finest that fits.
 const TFS = [{ label: "1m", res: 60 }, { label: "5m", res: 300 }, { label: "15m", res: 900 }, { label: "1h", res: 3600 }, { label: "1D", res: 86400 }];
-// Bars shown when the range is unbounded, and a hard cap so a wide range on a fine
-// resolution (e.g. 30 days of 1m) doesn't try to draw tens of thousands of candles.
-const DEFAULT_BARS = 300;
+// Hard cap so a wide range on a fine resolution (30 days of 1m) doesn't try to draw
+// tens of thousands of candles. This is a RENDERING limit — it must never quietly
+// redefine the period, so timeframes that would exceed it are disabled instead.
 const MAX_BARS = 1500;
+const FALLBACK_SPAN_MS = 24 * 3_600_000; // "All time" with no signals to span
+const MIN_SPAN_MS = 2 * 3_600_000; // one recent signal shouldn't collapse the window
+
+/** Can this timeframe render `spanMs` within the bar cap? */
+const fitsSpan = (res: number, spanMs: number) => Math.ceil(spanMs / (res * 1000)) <= MAX_BARS;
+const barsFor = (res: number, spanMs: number) => Math.min(Math.max(Math.ceil(spanMs / (res * 1000)), 2), MAX_BARS);
 const price = (n: number) => parseFloat(n.toFixed(2)).toLocaleString("en-US");
 const dateOf = (ms: number) => new Date(ms).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 
@@ -49,15 +56,53 @@ export default function ChartPage() {
   const [signals, setSignals] = useState<Signal[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // The visible window: the calendar range, clamped to a sane bar count for the
-  // chosen resolution. Candles AND signals both derive from it, so the markers,
-  // the trades table and the price action always cover the same dates.
-  const { bars, windowStart, windowEnd, live } = useMemo(() => {
-    const end = range.to ?? Date.now();
-    const spanMs = range.from != null ? end - range.from : DEFAULT_BARS * res * 1000;
-    const n = Math.min(Math.max(Math.ceil(spanMs / (res * 1000)), 2), MAX_BARS);
-    return { bars: n, windowStart: end - n * res * 1000, windowEnd: end, live: end >= Date.now() - 60_000 };
-  }, [range, res]);
+  // Signals for the selected calendar range. This depends on the RANGE ONLY — never
+  // on the timeframe — so switching 1m→1h can't change which trades are in view.
+  const { from: rangeFrom, to: rangeTo } = range;
+  useEffect(() => {
+    const token = getToken();
+    if (!token) return;
+    let cancelled = false;
+    const load = () =>
+      api.signalsRange(token, rangeFrom ?? 0, rangeTo ?? undefined)
+        .then((s) => { if (!cancelled) setSignals(s); })
+        .catch(() => { if (!cancelled) setSignals([]); });
+    void load();
+    if (rangeTo != null) return () => { cancelled = true; }; // a past range is static
+    const id = setInterval(load, 5000); // a range running to "now" keeps refreshing
+    return () => { cancelled = true; clearInterval(id); };
+  }, [rangeFrom, rangeTo]);
+
+  const symbolSignals = useMemo(() => signals.filter((s) => s.market === symbol || s.symbol === symbol), [signals, symbol]);
+
+  // The visible period. The CALENDAR owns it; the timeframe only picks the bucket
+  // size. Deliberately free of `res` — deriving the window from a bar count is what
+  // used to let the 1m/5m toggle silently redefine the period.
+  const { windowStart, windowEnd, live } = useMemo(() => {
+    const end = rangeTo ?? Date.now();
+    let start: number;
+    if (rangeFrom != null) start = rangeFrom;
+    else {
+      // "All time" = this symbol's first signal → now, matching the Performance page.
+      // Nothing to span yet → a plain recent window rather than a zero-width one.
+      const first = symbolSignals.reduce((m, s) => Math.min(m, s.openedAt), Infinity);
+      start = Number.isFinite(first) ? first : end - FALLBACK_SPAN_MS;
+    }
+    if (end - start < MIN_SPAN_MS) start = end - MIN_SPAN_MS;
+    return { windowStart: start, windowEnd: end, live: end >= Date.now() - 60_000 };
+  }, [rangeFrom, rangeTo, symbolSignals]);
+
+  const spanMs = windowEnd - windowStart;
+  const bars = barsFor(res, spanMs);
+
+  // A range change can strand the current timeframe (1m selected, then 90 days
+  // picked). Disabling the buttons stops the click, not this — so snap to the finest
+  // timeframe that can render the period. Safe from feedback: spanMs ignores `res`.
+  useEffect(() => {
+    if (fitsSpan(res, spanMs)) return;
+    const next = TFS.find((t) => fitsSpan(t.res, spanMs));
+    if (next) setRes(next.res);
+  }, [res, spanMs]);
 
   // Candles. The backend serves "the last N bars", not an arbitrary range, so only
   // ask it for a live window — a historical range falls through to the demo series.
@@ -71,23 +116,6 @@ export default function ChartPage() {
       .catch(() => { if (!cancelled) { setCandles([]); setLoading(false); } });
     return () => { cancelled = true; };
   }, [symbol, res, bars, live]);
-
-  // Signals for exactly the window the candles cover.
-  useEffect(() => {
-    const token = getToken();
-    if (!token) return;
-    let cancelled = false;
-    const load = () =>
-      api.signalsRange(token, windowStart, windowEnd)
-        .then((s) => { if (!cancelled) setSignals(s); })
-        .catch(() => { if (!cancelled) setSignals([]); });
-    void load();
-    if (!live) return () => { cancelled = true; };
-    const id = setInterval(load, 5000); // a live window keeps refreshing
-    return () => { cancelled = true; clearInterval(id); };
-  }, [windowStart, windowEnd, live]);
-
-  const symbolSignals = useMemo(() => signals.filter((s) => s.market === symbol || s.symbol === symbol), [signals, symbol]);
 
   // Anchor demo candles to the real signal entries for this symbol so the chart
   // and the trades table stay visually coherent.
@@ -160,11 +188,27 @@ export default function ChartPage() {
           <div className="flex flex-wrap items-center gap-2">
             <DateRangePicker value={range} onChange={setRange} />
             <div className="inline-flex rounded-lg border border-border bg-surface-2 p-0.5">
-              {TFS.map((tf) => (
-                <button key={tf.res} onClick={() => setRes(tf.res)} className={cn("rounded-md px-2.5 py-1 text-xs font-medium", res === tf.res ? "bg-primary text-white" : "text-muted hover:text-foreground")}>
-                  {tf.label}
-                </button>
-              ))}
+              {TFS.map((tf) => {
+                // A timeframe that can't span the period is disabled rather than
+                // allowed to shrink it — the period is the calendar's to decide.
+                const ok = fitsSpan(tf.res, spanMs);
+                const need = Math.ceil(spanMs / (tf.res * 1000));
+                return (
+                  <button
+                    key={tf.res}
+                    onClick={() => setRes(tf.res)}
+                    disabled={!ok}
+                    title={ok ? undefined : `${rangeLabel(range)} would need ${need.toLocaleString("en-US")} ${tf.label} candles — the chart draws at most ${MAX_BARS.toLocaleString("en-US")}. Pick a coarser timeframe or a shorter range.`}
+                    className={cn(
+                      "rounded-md px-2.5 py-1 text-xs font-medium transition",
+                      res === tf.res ? "bg-primary text-white" : "text-muted hover:text-foreground",
+                      !ok && "cursor-not-allowed opacity-30 hover:text-muted",
+                    )}
+                  >
+                    {tf.label}
+                  </button>
+                );
+              })}
             </div>
           </div>
         </div>
