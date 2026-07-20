@@ -82,7 +82,11 @@ export default function ChartPage() {
   // size. Deliberately free of `res` — deriving the window from a bar count is what
   // used to let the 1m/5m toggle silently redefine the period.
   const { windowStart, windowEnd, live } = useMemo(() => {
-    const end = rangeTo ?? Date.now();
+    // Quantised to the minute. A raw Date.now() moved on EVERY signal push (1/s),
+    // which regenerated the candle array and re-fit the chart — throwing away the
+    // user's zoom a second after they set it. Minute granularity is invisible here
+    // and independent of `res`, so it can't feed back into the timeframe snap below.
+    const end = rangeTo ?? Math.floor(Date.now() / 60_000) * 60_000;
     let start: number;
     if (rangeFrom != null) start = rangeFrom;
     else {
@@ -239,7 +243,14 @@ export default function ChartPage() {
           </div>
         </div>
         <div className="relative">
-          <ChartCanvas candles={displayCandles} markers={markers} trades={tradePoints} />
+          <ChartCanvas
+            candles={displayCandles}
+            markers={markers}
+            trades={tradePoints}
+            // Identifies the VIEW, not the data: changing symbol, timeframe or the
+            // calendar range re-fits; a live candle update leaves the zoom alone.
+            fitKey={`${symbol}|${res}|${rangeFrom ?? "auto"}|${rangeTo ?? "live"}`}
+          />
           {usingDemo && (
             <div className="pointer-events-none absolute left-2 top-2 rounded-md border border-border bg-surface-2/80 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted backdrop-blur">
               Demo data
@@ -319,7 +330,7 @@ interface Connector {
   flip: boolean; // exit sits near the right edge → hang the pill to its left
 }
 
-function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers: SeriesMarker<Time>[]; trades: TradePoint[] }) {
+function ChartCanvas({ candles, markers, trades, fitKey }: { candles: Candle[]; markers: SeriesMarker<Time>[]; trades: TradePoint[]; fitKey: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -329,6 +340,7 @@ function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers:
   const tipRef = useRef<{ x: number; y: number; t: TradePoint } | null>(null);
   const hoverIdRef = useRef<string | null>(null);
   const redrawRef = useRef<() => void>(() => {});
+  const lastFitRef = useRef<string>(""); // last view the chart auto-fitted to
   const [tip, setTip] = useState<{ x: number; y: number; t: TradePoint } | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [connector, setConnector] = useState<Connector | null>(null);
@@ -459,8 +471,14 @@ function ChartCanvas({ candles, markers, trades }: { candles: Candle[]; markers:
     for (const c of candles) m.set(c.time, { o: c.open, c: c.close });
     barsRef.current = m;
     setTip(null); // clears the connector via the effect below
-    if (candles.length) chartRef.current?.timeScale().fitContent();
-  }, [candles]);
+    // Re-fit ONLY when the view itself changes (symbol / timeframe / date range).
+    // Fitting on every data refresh reset the zoom the moment new candles arrived,
+    // so zooming in appeared to "stretch back out" on its own.
+    if (candles.length && fitKey !== lastFitRef.current) {
+      lastFitRef.current = fitKey;
+      chartRef.current?.timeScale().fitContent();
+    }
+  }, [candles, fitKey]);
 
   useEffect(() => { markersRef.current?.setMarkers(markers); }, [markers]);
 
