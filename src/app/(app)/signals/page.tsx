@@ -166,8 +166,9 @@ function Row({ s }: { s: Signal }) {
   if (s.locked) return <LockedRow s={s} />;
 
   const isOpen = s.status === "active";
-  // Open rows mark to market; closed rows show the final number.
-  const pnl = (isOpen ? s.unrealizedPnl : s.pnl) ?? 0;
+  // Open rows mark to market; closed rows show the final number. `null` means the
+  // live mark is unavailable — show "—", never a fabricated $0.
+  const pnl = isOpen ? s.unrealizedPnl : s.pnl;
   // Time tracks the event that last moved the row: opened while open, closed once closed.
   const when = isOpen ? s.openedAt : (s.closedAt ?? s.openedAt);
 
@@ -192,7 +193,9 @@ function Row({ s }: { s: Signal }) {
       <Td className="nums text-right">
         {s.exit != null ? price(s.exit) : <span className="text-muted-2">—</span>}
       </Td>
-      <Td className={cn("nums text-right font-medium", pnlClass(pnl))}>{signed(pnl)}</Td>
+      <Td className={cn("nums text-right font-medium", pnl != null && pnlClass(pnl))}>
+        {pnl != null ? signed(pnl) : <span className="text-muted-2" title="Waiting for a live market price">—</span>}
+      </Td>
       <Td><StatusBadge s={s} /></Td>
       <Td className="nums text-muted"><span title={dt(when)}>{timeAgo(when)}</span></Td>
     </tr>
