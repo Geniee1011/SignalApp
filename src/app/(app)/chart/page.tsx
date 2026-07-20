@@ -102,14 +102,15 @@ export default function ChartPage() {
   const spanMs = windowEnd - windowStart;
   const bars = barsFor(res, spanMs);
 
-  // A range change can strand the current timeframe (1m selected, then 90 days
-  // picked). Disabling the buttons stops the click, not this — so snap to the finest
-  // timeframe that can render the period. Safe from feedback: spanMs ignores `res`.
-  useEffect(() => {
-    if (fitsSpan(res, spanMs)) return;
-    const next = TFS.find((t) => fitsSpan(t.res, spanMs));
-    if (next) setRes(next.res);
-  }, [res, spanMs]);
+  // A fine timeframe over a long range needs more candles than the chart can draw
+  // (37 days of 1m = 53k bars vs a 1,500 cap). Rather than DISABLING those buttons —
+  // which dead-ends you with no way forward except changing the calendar — we render
+  // the most recent slice of the selected range that fits, anchored to its end.
+  // The calendar still owns the outer bound; the timeframe just picks the detail
+  // level, and `viewClamped` tells the user plainly when they're seeing a tail.
+  const viewEnd = windowEnd;
+  const viewStart = Math.max(windowStart, viewEnd - MAX_BARS * res * 1000);
+  const viewClamped = viewStart > windowStart;
 
   // Candles. The backend serves "the last N bars", not an arbitrary range, so only
   // ask it for a live window — a historical range falls through to the demo series.
@@ -213,26 +214,33 @@ export default function ChartPage() {
             <select value={symbol} onChange={(e) => setSymbol(e.target.value)} className="rounded-lg border border-border bg-surface-2 px-2.5 py-1 text-sm font-semibold outline-none focus:border-primary">
               {MARKETS.map((m) => <option key={m} value={m}>{m}</option>)}
             </select>
-            <span className="text-xs text-muted">{DESC[symbol] ?? ""} · {rangeLabel(range)}</span>
+            <span className="text-xs text-muted">
+              {DESC[symbol] ?? ""} · {rangeLabel(range)}
+              {viewClamped && (
+                // The selected period is longer than this timeframe can draw, so the
+                // chart shows its tail. Say so — otherwise the calendar and the axis
+                // disagree and it reads as a bug.
+                <span className="ml-1 text-muted-2" title={`Showing the most recent ${MAX_BARS.toLocaleString("en-US")} candles of ${rangeLabel(range)}. Pick a coarser timeframe to see the whole period.`}>
+                  · showing latest {new Date(viewStart).toLocaleDateString("en-US", { month: "short", day: "numeric" })} →
+                </span>
+              )}
+            </span>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <DateRangePicker value={range} onChange={setRange} />
             <div className="inline-flex rounded-lg border border-border bg-surface-2 p-0.5">
               {TFS.map((tf) => {
-                // A timeframe that can't span the period is disabled rather than
-                // allowed to shrink it — the period is the calendar's to decide.
-                const ok = fitsSpan(tf.res, spanMs);
-                const need = Math.ceil(spanMs / (tf.res * 1000));
+                // Every timeframe stays clickable. One that can't span the whole
+                // period shows its most recent slice instead (see viewStart above).
+                const fits = fitsSpan(tf.res, spanMs);
                 return (
                   <button
                     key={tf.res}
                     onClick={() => setRes(tf.res)}
-                    disabled={!ok}
-                    title={ok ? undefined : `${rangeLabel(range)} would need ${need.toLocaleString("en-US")} ${tf.label} candles — the chart draws at most ${MAX_BARS.toLocaleString("en-US")}. Pick a coarser timeframe or a shorter range.`}
+                    title={fits ? undefined : `${rangeLabel(range)} is longer than ${MAX_BARS.toLocaleString("en-US")} ${tf.label} candles — shows the most recent ${tf.label} slice of the range.`}
                     className={cn(
                       "rounded-md px-2.5 py-1 text-xs font-medium transition",
                       res === tf.res ? "bg-primary text-white" : "text-muted hover:text-foreground",
-                      !ok && "cursor-not-allowed opacity-30 hover:text-muted",
                     )}
                   >
                     {tf.label}
