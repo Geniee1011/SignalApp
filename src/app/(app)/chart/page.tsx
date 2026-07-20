@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   createChart, CandlestickSeries, createSeriesMarkers, ColorType, CrosshairMode,
-  type IChartApi, type ISeriesApi, type UTCTimestamp, type SeriesMarker, type Time,
+  type IChartApi, type ISeriesApi, type UTCTimestamp, type SeriesMarker, type SeriesMarkerBar, type Time,
   type ISeriesMarkersPluginApi, type MouseEventParams,
 } from "lightweight-charts";
 import { api, type Candle, type Signal } from "@/lib/api";
@@ -34,6 +34,8 @@ const fitsSpan = (res: number, spanMs: number) => Math.ceil(spanMs / (res * 1000
 const barsFor = (res: number, spanMs: number) => Math.min(Math.max(Math.ceil(spanMs / (res * 1000)), 2), MAX_BARS);
 const price = (n: number) => parseFloat(n.toFixed(2)).toLocaleString("en-US");
 const dateOf = (ms: number) => new Date(ms).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+/** Floor a timestamp to its bar bucket — the grid markers and trades share. */
+const snapTo = (ms: number, res: number) => Math.floor(ms / 1000 / res) * res;
 
 // A trade reduced to its exact chart coordinates — used for the hover connector + tooltip.
 interface TradePoint {
@@ -46,6 +48,7 @@ interface TradePoint {
   status: "active" | "closed";
   entryTime: UTCTimestamp;
   exitTime: UTCTimestamp | null;
+  barCount: number; // trades sharing this entry bar (1 = not clustered)
 }
 
 export default function ChartPage() {
@@ -132,29 +135,45 @@ export default function ChartPage() {
     return generateDemoCandles(symbol, res, bars, anchorPrice, windowEnd);
   }, [candles, symbol, res, bars, anchorPrice, windowEnd]);
 
+  // ONE marker per bar. Signals arrive one-per-entry-lot (see getActiveSignals),
+  // so a position scaled into with a dozen lots used to draw a dozen arrows at the
+  // same timestamp — lightweight-charts stacks those vertically into a tower. Bars
+  // holding more than one signal collapse to a single counted marker instead; the
+  // hover tooltip still lists every trade, so nothing is hidden.
   const markers = useMemo<SeriesMarker<Time>[]>(() => {
-    const snap = (ms: number) => (Math.floor(ms / 1000 / res) * res) as UTCTimestamp;
-    const out: SeriesMarker<Time>[] = [];
+    const byBar = new Map<number, { longs: number; shorts: number }>();
     for (const s of symbolSignals) {
-      const isLong = s.side === "LONG";
-      // Only ENTRY markers are drawn by default (arrow by side, blue long / amber
-      // short). A trade's exit is revealed on demand — hover or click that trade and
-      // its connector shows the exit (cyan end-dot) — so every exit isn't scattered
-      // across the whole chart at once.
-      out.push({
-        time: snap(s.openedAt),
-        position: isLong ? "belowBar" : "aboveBar",
-        color: isLong ? "#3b82f6" : "#f5a623",
-        shape: isLong ? "arrowUp" : "arrowDown",
-      });
+      const t = snapTo(s.openedAt, res);
+      const e = byBar.get(t) ?? { longs: 0, shorts: 0 };
+      if (s.side === "LONG") e.longs++; else e.shorts++;
+      byBar.set(t, e);
     }
-    return out.sort((a, b) => (a.time as number) - (b.time as number));
+    return [...byBar.entries()]
+      .map(([time, { longs, shorts }]) => {
+        const n = longs + shorts;
+        // A bar that is purely one side keeps that side's arrow and colour. A mixed
+        // bar would be a lie either way, so it gets a neutral circle.
+        const mixed = longs > 0 && shorts > 0;
+        const isLong = longs >= shorts;
+        // Typed as the bar-anchored marker specifically: the price-anchored variant
+        // of the union additionally requires a `price`, which these don't carry.
+        const marker: SeriesMarkerBar<Time> = {
+          time: time as UTCTimestamp,
+          position: mixed ? "aboveBar" : isLong ? "belowBar" : "aboveBar",
+          color: mixed ? "#94a3b8" : isLong ? "#3b82f6" : "#f5a623",
+          shape: mixed ? "circle" : isLong ? "arrowUp" : "arrowDown",
+          // Only counted when it stands for more than one trade — a "1" on every
+          // marker would be the label-every-point noise the count exists to avoid.
+          ...(n > 1 ? { text: String(n) } : {}),
+        };
+        return marker;
+      })
+      .sort((a, b) => (a.time as number) - (b.time as number));
   }, [symbolSignals, res]);
 
   // Exact per-trade coordinates for the hover connector/tooltip (snapped to the resolution grid).
   const tradePoints = useMemo<TradePoint[]>(() => {
-    const snap = (ms: number) => (Math.floor(ms / 1000 / res) * res) as UTCTimestamp;
-    return symbolSignals.map((s) => ({
+    const pts = symbolSignals.map((s) => ({
       id: s.id,
       side: s.side,
       entry: s.entry,
@@ -162,9 +181,16 @@ export default function ChartPage() {
       pnl: s.pnl,
       unrealizedPnl: s.unrealizedPnl,
       status: s.status,
-      entryTime: snap(s.openedAt),
-      exitTime: s.closedAt != null ? snap(s.closedAt) : null,
+      entryTime: snapTo(s.openedAt, res) as UTCTimestamp,
+      exitTime: s.closedAt != null ? (snapTo(s.closedAt, res) as UTCTimestamp) : null,
+      barCount: 1,
     }));
+    // How many trades share each entry bar — the tooltip reports it so a counted
+    // marker can be read without guessing which of its trades is being shown.
+    const per = new Map<number, number>();
+    for (const p of pts) per.set(p.entryTime as number, (per.get(p.entryTime as number) ?? 0) + 1);
+    for (const p of pts) p.barCount = per.get(p.entryTime as number) ?? 1;
+    return pts;
   }, [symbolSignals, res]);
 
   const closedForSymbol = useMemo(() => symbolSignals.filter((s) => s.status === "closed").sort((a, b) => (b.closedAt ?? 0) - (a.closedAt ?? 0)), [symbolSignals]);
@@ -226,6 +252,7 @@ export default function ChartPage() {
           <span className="inline-flex items-center gap-1"><span style={{ color: "#3b82f6" }}>▲</span> Long entry</span>
           <span className="inline-flex items-center gap-1"><span style={{ color: "#f5a623" }}>▼</span> Short entry</span>
           <span className="inline-flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full align-middle" style={{ background: "#22d3ee" }} /> Exit</span>
+          <span className="inline-flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full align-middle" style={{ background: "#94a3b8" }} /> <span className="font-medium">3</span> = trades on one bar</span>
         </div>
       </Card>
 
@@ -496,7 +523,12 @@ function HoverTip({ tip, width, onClose }: { tip: { x: number; y: number; t: Tra
   return (
     <div className="pointer-events-none absolute z-20 rounded-lg border border-border bg-surface/95 p-2.5 text-xs shadow-lg backdrop-blur" style={{ left, top, width: W }}>
       <div className="mb-1.5 flex items-center justify-between gap-2">
-        <span className={cn("font-semibold", isLong ? "text-info" : "text-short")}>{isLong ? "↑ Long" : "↓ Short"}</span>
+        <span className={cn("font-semibold", isLong ? "text-info" : "text-short")}>
+          {isLong ? "↑ Long" : "↓ Short"}
+          {/* This bar carries a counted marker — say so, otherwise the figures below
+              look like they describe all of them rather than this one trade. */}
+          {t.barCount > 1 && <span className="ml-1 font-normal text-muted-2">1 of {t.barCount}</span>}
+        </span>
         <div className="flex items-center gap-1.5">
           <span className="text-[10px] uppercase tracking-wide text-muted-2">{t.status === "closed" ? "Closed" : "Open"}</span>
           {/* Only the button takes pointer events — the rest of the dialog stays
