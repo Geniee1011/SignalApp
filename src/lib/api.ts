@@ -85,6 +85,8 @@ export const api = {
     req<{ token: string; user: SignalUser }>("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),
   me: (token: string) => req<{ user: SignalUser }>("/api/auth/me", {}, token),
   signals: (token: string, hours = 24) => req<Signal[]>(`/api/signals?hours=${hours}`, {}, token),
+  /** Every open signal + all closed (capped) — the admin Positions page's mirror. */
+  signalsAll: (token: string) => req<Signal[]>("/api/signals?all=1", {}, token),
   /** Signals inside an explicit window (the chart's calendar range). */
   signalsRange: (token: string, sinceMs: number, untilMs?: number) => {
     const q = new URLSearchParams({ since: String(Math.max(0, Math.round(sinceMs))) });

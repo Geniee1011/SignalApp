@@ -34,7 +34,8 @@ export const useSignalsStore = create<SignalsState>((set, get) => ({
     const token = getToken();
     if (!token) return;
     try {
-      const signals = await api.signals(token, 24);
+      // All-time (capped), matching the admin Positions page rather than a 24h window.
+      const signals = await api.signalsAll(token);
       set({ signals, loading: false });
     } catch {
       set({ loading: false });
