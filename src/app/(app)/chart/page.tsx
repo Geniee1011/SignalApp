@@ -140,6 +140,28 @@ export default function ChartPage() {
     return generateDemoCandles(symbol, res, bars, anchorPrice, windowEnd);
   }, [candles, symbol, res, bars, anchorPrice, windowEnd]);
 
+  // Only signals that fall INSIDE the rendered candles get drawn.
+  //
+  // Signals are fetched for the whole calendar range, but the candle series may cover
+  // just its tail (a fine timeframe over a long period — see viewStart). A marker
+  // whose timestamp lies outside the series doesn't disappear: lightweight-charts
+  // pins it to the nearest bar, so every out-of-range trade lands on the first candle
+  // and stacks into a vertical tower of arrows. Bounds come from the candles actually
+  // drawn, so this holds however the window was derived. One bar of tolerance keeps a
+  // trade that snaps just short of the first bar.
+  const [dataStart, dataEnd] = useMemo(() => {
+    if (displayCandles.length === 0) return [viewStart, viewEnd];
+    const first = displayCandles[0]!.time * 1000;
+    const last = displayCandles[displayCandles.length - 1]!.time * 1000;
+    return [first - res * 1000, last + res * 1000];
+  }, [displayCandles, res, viewStart, viewEnd]);
+
+  const visibleSignals = useMemo(
+    () => symbolSignals.filter((s) => s.openedAt >= dataStart && s.openedAt <= dataEnd),
+    [symbolSignals, dataStart, dataEnd],
+  );
+  const hiddenCount = symbolSignals.length - visibleSignals.length;
+
   // ONE marker per bar. Signals arrive one-per-entry-lot (see getActiveSignals),
   // so a position scaled into with a dozen lots used to draw a dozen arrows at the
   // same timestamp — lightweight-charts stacks those vertically into a tower. Bars
@@ -147,7 +169,7 @@ export default function ChartPage() {
   // hover tooltip still lists every trade, so nothing is hidden.
   const markers = useMemo<SeriesMarker<Time>[]>(() => {
     const byBar = new Map<number, { longs: number; shorts: number }>();
-    for (const s of symbolSignals) {
+    for (const s of visibleSignals) {
       const t = snapTo(s.openedAt, res);
       const e = byBar.get(t) ?? { longs: 0, shorts: 0 };
       if (s.side === "LONG") e.longs++; else e.shorts++;
@@ -174,11 +196,11 @@ export default function ChartPage() {
         return marker;
       })
       .sort((a, b) => (a.time as number) - (b.time as number));
-  }, [symbolSignals, res]);
+  }, [visibleSignals, res]);
 
   // Exact per-trade coordinates for the hover connector/tooltip (snapped to the resolution grid).
   const tradePoints = useMemo<TradePoint[]>(() => {
-    const pts = symbolSignals.map((s) => ({
+    const pts = visibleSignals.map((s) => ({
       id: s.id,
       side: s.side,
       entry: s.entry,
@@ -196,7 +218,7 @@ export default function ChartPage() {
     for (const p of pts) per.set(p.entryTime as number, (per.get(p.entryTime as number) ?? 0) + 1);
     for (const p of pts) p.barCount = per.get(p.entryTime as number) ?? 1;
     return pts;
-  }, [symbolSignals, res]);
+  }, [visibleSignals, res]);
 
   const closedForSymbol = useMemo(() => symbolSignals.filter((s) => s.status === "closed").sort((a, b) => (b.closedAt ?? 0) - (a.closedAt ?? 0)), [symbolSignals]);
 
@@ -222,6 +244,7 @@ export default function ChartPage() {
                 // disagree and it reads as a bug.
                 <span className="ml-1 text-muted-2" title={`Showing the most recent ${MAX_BARS.toLocaleString("en-US")} candles of ${rangeLabel(range)}. Pick a coarser timeframe to see the whole period.`}>
                   · showing latest {new Date(viewStart).toLocaleDateString("en-US", { month: "short", day: "numeric" })} →
+                  {hiddenCount > 0 && ` (${hiddenCount} earlier trade${hiddenCount === 1 ? "" : "s"} off-chart)`}
                 </span>
               )}
             </span>
