@@ -105,11 +105,48 @@ export const api = {
   chartHistory: (token: string, symbol: string, resolution: number, count = 300) =>
     req<Candle[]>(`/api/chart/history?symbol=${encodeURIComponent(symbol)}&resolution=${resolution}&count=${count}`, {}, token),
 
+  // --- auto-copy ---
+  copySettings: (token: string) => req<CopySettings>("/api/copy/settings", {}, token),
+  updateCopySettings: (token: string, body: CopySettings) =>
+    req<CopySettings>("/api/copy/settings", { method: "PUT", body: JSON.stringify(body) }, token),
+  copyOrders: (token: string) => req<CopyOrder[]>("/api/copy/orders", {}, token),
+
   // --- admin ---
   adminListUsers: (token: string) => req<AdminUser[]>("/api/admin/users", {}, token),
   adminUpdateUser: (token: string, id: string, body: { access?: AccessConfig; status?: "ACTIVE" | "SUSPENDED" }) =>
     req<{ ok: true }>(`/api/admin/users/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(body) }, token),
 };
+
+/** off = nothing; confirm = prepared, awaiting your approval; auto = placed for you. */
+export type CopyMode = "off" | "confirm" | "auto";
+
+export interface CopySettings {
+  mode: CopyMode;
+  markets: string[]; // [] = every market you can see
+  minConviction: number; // 1..4
+  quantity: number; // contracts per signal
+  maxConcurrent: number;
+  maxPerDay: number;
+}
+
+export type CopyOrderStatus =
+  | "PENDING_CONFIRM" | "QUEUED" | "PLACED" | "REJECTED" | "SKIPPED" | "EXPIRED" | "ABANDONED";
+
+export interface CopyOrder {
+  id: string;
+  signalId: string;
+  symbol: string;
+  side: "LONG" | "SHORT";
+  quantity: number;
+  status: CopyOrderStatus;
+  reason: string | null;
+  brokerOrderId: string | null;
+  stopLoss: number | null;
+  takeProfit: number | null;
+  conviction: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
 
 export interface Candle {
   time: number; // epoch seconds
