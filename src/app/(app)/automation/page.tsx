@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Card, Badge } from "@/components/ui";
-import { api, MARKETS, type CopyMode, type CopyOrder, type CopySettings } from "@/lib/api";
-import { getToken } from "@/store/auth-store";
+import { api, API_BASE, MARKETS, type CopyMode, type CopyOrder, type CopySettings } from "@/lib/api";
+import { getToken, useAuthStore } from "@/store/auth-store";
 import { cn, timeAgo } from "@/lib/utils";
 
 /* Automation — auto-copy settings + recent copy activity.
@@ -46,6 +46,7 @@ export default function AutomationPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const email = useAuthStore((s) => s.user?.email) ?? "";
 
   const load = useCallback(async () => {
     const token = getToken();
@@ -132,6 +133,8 @@ export default function AutomationPage() {
         </div>
       </Card>
 
+      <ConnectGuide serverUrl={API_BASE} email={email} />
+
       <Card className={cn("mb-4 p-5 transition", !on && "opacity-50")}>
         <div className="text-sm font-medium">Rules</div>
         <p className="mt-1 text-sm text-muted">Only signals matching all of these are copied.</p>
@@ -214,6 +217,85 @@ export default function AutomationPage() {
       <p className="mt-3 text-xs text-muted-2">
         Copying follows your subscription access — you can only auto-trade signals you can see.
       </p>
+    </div>
+  );
+}
+
+// One-time setup guide for the terminal that actually places the copied orders.
+// Collapsed by default; the connection details are pre-filled from the session.
+function ConnectGuide({ serverUrl, email }: { serverUrl: string; email: string }) {
+  const [open, setOpen] = useState(false);
+  const download = process.env.NEXT_PUBLIC_ATAS_DOWNLOAD_URL;
+
+  return (
+    <Card className="mb-4 p-5">
+      <button onClick={() => setOpen((o) => !o)} className="flex w-full items-start justify-between gap-3 text-left">
+        <div>
+          <div className="text-sm font-medium">Connect your terminal</div>
+          <p className="mt-1 max-w-2xl text-sm text-muted">
+            Automatic and Confirm modes queue orders for a terminal you run (an ATAS strategy). Set it up once
+            with the details below — until then, nothing is placed even with a mode selected.
+          </p>
+        </div>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+          className={cn("mt-1 h-4 w-4 shrink-0 text-muted transition", open && "rotate-180")}>
+          <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+
+      {open && (
+        <div className="mt-4 space-y-4">
+          <div className="rounded-lg border border-border bg-surface-2 p-3">
+            <div className="mb-1 text-xs font-medium text-muted">Paste these into the ATAS strategy settings</div>
+            <CopyRow label="Server URL" value={serverUrl} />
+            <CopyRow label="Email" value={email} />
+            <div className="flex items-center justify-between gap-3 py-1.5 text-sm">
+              <span className="text-muted">Password</span>
+              <span className="text-muted-2">your Signal App password (the one you signed in with)</span>
+            </div>
+          </div>
+
+          <ol className="list-decimal space-y-2 pl-5 text-sm text-muted">
+            <li>
+              {download
+                ? <a href={download} className="font-medium text-primary underline">Download the Signal Copier strategy</a>
+                : <span className="text-foreground">Get the Signal Copier strategy file from us</span>}
+              , drop it into <code className="rounded bg-surface-3 px-1 py-0.5 text-[11px] text-foreground">%APPDATA%\ATAS\Strategies\</code>, and restart ATAS.
+            </li>
+            <li>Open a <span className="text-foreground">micro</span> chart (MES, MNQ, MYM, MGC or MCL) on your broker or sim account.</li>
+            <li>Add the <span className="text-foreground">Signal Copier</span> strategy to that chart.</li>
+            <li>Paste the <span className="text-foreground">Server URL</span> and your <span className="text-foreground">login</span> (above) into its settings.</li>
+            <li>Set the mode above to <span className="text-foreground">Automatic</span> or <span className="text-foreground">Confirm each</span>.</li>
+            <li>In the strategy, turn <span className="text-foreground">Place orders</span> on once the log looks right. It only trades while ATAS is running.</li>
+          </ol>
+
+          <p className="text-[11px] text-muted-2">
+            We queue the orders; your terminal places them through your own broker. We never see or hold your broker login.
+          </p>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function CopyRow({ label, value }: { label: string; value: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(value); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* clipboard blocked */ }
+  };
+  return (
+    <div className="flex items-center justify-between gap-3 py-1.5">
+      <span className="shrink-0 text-sm text-muted">{label}</span>
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="truncate font-mono text-xs text-foreground">{value || "—"}</span>
+        <button
+          onClick={copy}
+          disabled={!value}
+          className="shrink-0 rounded-md border border-border px-2 py-0.5 text-[11px] text-muted transition hover:text-foreground disabled:opacity-40"
+        >
+          {copied ? "Copied ✓" : "Copy"}
+        </button>
+      </div>
     </div>
   );
 }
