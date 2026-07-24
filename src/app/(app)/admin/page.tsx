@@ -202,6 +202,7 @@ function AccessSummary({ access }: { access: AccessConfig }) {
   chips.push(access.direction === "BOTH" ? "Long & Short" : access.direction === "LONG" ? "Long only" : "Short only");
   chips.push(access.dailyLimit == null ? "Unlimited" : `${access.dailyLimit}/day`);
   if (access.minConviction > 1) chips.push(`Conv ${access.minConviction}+`);
+  if (access.allocationPercent < 100) chips.push(`Copies ${access.allocationPercent}%`);
   if (!access.live) chips.push("History only");
   return (
     <div className="flex flex-wrap gap-1">
@@ -295,6 +296,39 @@ function AccessEditor({ user, onClose, onSaved }: { user: AdminUser; onClose: ()
             >
               {[1, 2, 3, 4].map((n) => <option key={n} value={n}>{CONVICTION_LABEL[n]}</option>)}
             </select>
+          </Section>
+
+          {/* Copy allocation */}
+          <Section
+            title="Copy allocation"
+            hint="Share of eligible signals actually copied. Different % → different accounts get different trades."
+          >
+            <div className="flex items-center gap-3">
+              <input
+                type="range"
+                min={0}
+                max={100}
+                step={5}
+                value={access.allocationPercent}
+                onChange={(e) => patch({ allocationPercent: Number(e.target.value) })}
+                className="flex-1 accent-primary"
+              />
+              <div className="flex items-center rounded-lg border border-border bg-surface-2 px-2.5 py-1.5">
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={access.allocationPercent}
+                  onChange={(e) => patch({ allocationPercent: Math.min(100, Math.max(0, Math.floor(Number(e.target.value) || 0))) })}
+                  className="w-12 bg-transparent text-right text-sm font-medium outline-none nums"
+                />
+                <span className="text-sm text-muted-2">%</span>
+              </div>
+            </div>
+            <p className="text-[11px] text-muted-2">
+              100% = copies every eligible signal (default). Lower spreads the fleet across different
+              trades — the subscriber still <span className="text-muted">sees</span> all of them.
+            </p>
           </Section>
 
           {/* Toggles */}

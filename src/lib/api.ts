@@ -41,6 +41,7 @@ export interface AccessConfig {
   minConviction: number; // 1..4
   live: boolean; // see active/live signals
   suspended: boolean; // feed cut entirely
+  allocationPercent: number; // 0-100: copy share of eligible signals (100 = all)
 }
 
 export interface AdminUser {
