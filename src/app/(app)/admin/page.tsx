@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { api, MARKETS, type AccessConfig, type AdminUser, type Direction } from "@/lib/api";
+import { api, MARKETS, type AccessConfig, type AdminUser, type Direction, type RiskConfig } from "@/lib/api";
 import { getToken } from "@/store/auth-store";
 import { useAuthStore } from "@/store/auth-store";
 import { Card, Button } from "@/components/ui";
@@ -55,6 +55,8 @@ export default function AdminPage() {
       </div>
 
       {error && <Card className="mb-4 border-short/40 p-3 text-sm text-short">{error}</Card>}
+
+      <RiskConfigCard />
 
       <Card className="overflow-hidden">
         <div className="overflow-x-auto">
@@ -116,6 +118,79 @@ function Mini({ label, value }: { label: string; value: number }) {
     <Card className="p-3">
       <div className="text-xs text-muted">{label}</div>
       <div className="mt-0.5 text-xl font-semibold nums">{value}</div>
+    </Card>
+  );
+}
+
+const LEVELS = [1, 2, 3, 4] as const;
+
+// Global conviction→risk map. Copied trades are sized (in micro contracts) to risk
+// this many dollars, by the signal's conviction — so a higher-conviction signal
+// carries proportionally more size.
+function RiskConfigCard() {
+  const [cfg, setCfg] = useState<RiskConfig | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    const token = getToken();
+    if (!token) return;
+    api.adminGetRiskConfig(token).then(setCfg).catch((e) => setErr((e as Error).message));
+  }, []);
+
+  const set = (lvl: (typeof LEVELS)[number], v: number) =>
+    setCfg((c) => (c ? { ...c, [lvl]: v } : c));
+
+  const save = async () => {
+    const token = getToken();
+    if (!token || !cfg) return;
+    setSaving(true); setErr(null); setSaved(false);
+    try {
+      setCfg(await api.adminSetRiskConfig(token, cfg));
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Card className="mb-4 p-4">
+      <div className="mb-1 flex items-baseline justify-between">
+        <div className="text-sm font-medium">Risk per conviction level</div>
+        <div className="text-[11px] text-muted-2">Copied trades are sized in micros to risk this much</div>
+      </div>
+      <p className="mb-3 text-xs text-muted">
+        A signal&apos;s conviction picks its dollar risk; the copier switches to micro contracts and
+        places the quantity that risks that amount, using the signal&apos;s stop distance.
+      </p>
+      {!cfg ? (
+        <div className="py-4 text-sm text-muted">Loading…</div>
+      ) : (
+        <div className="flex flex-wrap items-end gap-3">
+          {LEVELS.map((lvl) => (
+            <label key={lvl} className="block">
+              <span className="mb-1 block text-xs text-muted">Level {lvl}</span>
+              <div className="flex items-center rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 focus-within:border-primary">
+                <span className="text-sm text-muted-2">$</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={cfg[lvl]}
+                  onChange={(e) => set(lvl, Math.max(1, Math.floor(Number(e.target.value) || 1)))}
+                  className="w-20 bg-transparent px-1 text-right text-sm font-medium outline-none nums"
+                />
+              </div>
+            </label>
+          ))}
+          <Button onClick={save} loading={saving}>Save</Button>
+          {saved && <span className="text-xs text-long">Saved ✓</span>}
+          {err && <span className="text-xs text-short">{err}</span>}
+        </div>
+      )}
     </Card>
   );
 }

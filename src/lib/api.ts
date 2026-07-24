@@ -115,7 +115,13 @@ export const api = {
   adminListUsers: (token: string) => req<AdminUser[]>("/api/admin/users", {}, token),
   adminUpdateUser: (token: string, id: string, body: { access?: AccessConfig; status?: "ACTIVE" | "SUSPENDED" }) =>
     req<{ ok: true }>(`/api/admin/users/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(body) }, token),
+  adminGetRiskConfig: (token: string) => req<RiskConfig>("/api/admin/risk-config", {}, token),
+  adminSetRiskConfig: (token: string, config: RiskConfig) =>
+    req<RiskConfig>("/api/admin/risk-config", { method: "PUT", body: JSON.stringify(config) }, token),
 };
+
+/** Conviction level (1-4) → target dollar risk. Drives copy position sizing. */
+export interface RiskConfig { 1: number; 2: number; 3: number; 4: number }
 
 /** off = nothing; confirm = prepared, awaiting your approval; auto = placed for you. */
 export type CopyMode = "off" | "confirm" | "auto";
