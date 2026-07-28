@@ -122,11 +122,10 @@ function Mini({ label, value }: { label: string; value: number }) {
   );
 }
 
-const LEVELS = [1, 2, 3, 4] as const;
-
-// Global conviction→risk map. Copied trades are sized (in micro contracts) to risk
-// this many dollars, by the signal's conviction — so a higher-conviction signal
-// carries proportionally more size.
+// Global DEFAULT base risk per trade. A signal's risk = base × its conviction
+// (1..4); copied trades are sized (in micro contracts) to hit that dollar figure —
+// so a higher-conviction signal carries proportionally more size. Each subscriber
+// can override this base on their own automation page; this is the fallback.
 function RiskConfigCard() {
   const [cfg, setCfg] = useState<RiskConfig | null>(null);
   const [saving, setSaving] = useState(false);
@@ -139,8 +138,8 @@ function RiskConfigCard() {
     api.adminGetRiskConfig(token).then(setCfg).catch((e) => setErr((e as Error).message));
   }, []);
 
-  const set = (lvl: (typeof LEVELS)[number], v: number) =>
-    setCfg((c) => (c ? { ...c, [lvl]: v } : c));
+  const setBase = (v: number) =>
+    setCfg((c) => (c ? { ...c, baseRisk: Math.max(1, Math.floor(v || 1)) } : c));
 
   const save = async () => {
     const token = getToken();
@@ -157,35 +156,39 @@ function RiskConfigCard() {
     }
   };
 
+  const base = cfg?.baseRisk ?? 100;
   return (
     <Card className="mb-4 p-4">
       <div className="mb-1 flex items-baseline justify-between">
-        <div className="text-sm font-medium">Risk per conviction level</div>
+        <div className="text-sm font-medium">Default base risk per trade</div>
         <div className="text-[11px] text-muted-2">Copied trades are sized in micros to risk this much</div>
       </div>
       <p className="mb-3 text-xs text-muted">
-        A signal&apos;s conviction picks its dollar risk; the copier switches to micro contracts and
-        places the quantity that risks that amount, using the signal&apos;s stop distance.
+        A trade risks the base × the signal&apos;s conviction (1–4); the copier switches to micro
+        contracts and places the quantity that risks that amount, using the signal&apos;s stop
+        distance. Subscribers can override this base on their own account.
       </p>
       {!cfg ? (
         <div className="py-4 text-sm text-muted">Loading…</div>
       ) : (
         <div className="flex flex-wrap items-end gap-3">
-          {LEVELS.map((lvl) => (
-            <label key={lvl} className="block">
-              <span className="mb-1 block text-xs text-muted">Level {lvl}</span>
-              <div className="flex items-center rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 focus-within:border-primary">
-                <span className="text-sm text-muted-2">$</span>
-                <input
-                  type="number"
-                  min={1}
-                  value={cfg[lvl]}
-                  onChange={(e) => set(lvl, Math.max(1, Math.floor(Number(e.target.value) || 1)))}
-                  className="w-20 bg-transparent px-1 text-right text-sm font-medium outline-none nums"
-                />
-              </div>
-            </label>
-          ))}
+          <label className="block">
+            <span className="mb-1 block text-xs text-muted">Base risk</span>
+            <div className="flex items-center rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 focus-within:border-primary">
+              <span className="text-sm text-muted-2">$</span>
+              <input
+                type="number"
+                min={1}
+                value={cfg.baseRisk}
+                onChange={(e) => setBase(Number(e.target.value))}
+                className="w-24 bg-transparent px-1 text-right text-sm font-medium outline-none nums"
+              />
+            </div>
+          </label>
+          <div className="pb-1.5 text-xs text-muted-2">
+            L1 <span className="text-muted">${base}</span> · L2 <span className="text-muted">${base * 2}</span> ·
+            L3 <span className="text-muted">${base * 3}</span> · L4 <span className="text-muted">${base * 4}</span>
+          </div>
           <Button onClick={save} loading={saving}>Save</Button>
           {saved && <span className="text-xs text-long">Saved ✓</span>}
           {err && <span className="text-xs text-short">{err}</span>}

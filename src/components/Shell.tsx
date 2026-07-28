@@ -11,13 +11,18 @@ const NAV = [
   { href: "/signals", label: "Signals" },
   { href: "/performance", label: "Performance" },
   { href: "/automation", label: "Automation" },
+];
+// Admin-only pages. Chart is an internal tool subscribers don't need, so it lives
+// here next to Admin rather than in the shared nav.
+const ADMIN_NAV = [
   { href: "/chart", label: "Chart" },
+  { href: "/admin", label: "Admin" },
 ];
 
 export function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const role = useAuthStore((s) => s.user?.role);
-  const nav = role === "ADMIN" ? [...NAV, { href: "/admin", label: "Admin" }] : NAV;
+  const nav = role === "ADMIN" ? [...NAV, ...ADMIN_NAV] : NAV;
 
   return (
     <div className="flex min-h-screen">

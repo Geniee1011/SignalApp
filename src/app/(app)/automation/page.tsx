@@ -140,8 +140,8 @@ export default function AutomationPage() {
         <p className="mt-1 text-sm text-muted">Only signals matching all of these are copied.</p>
 
         <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <NumberField label="Contracts per signal" value={settings.quantity} min={1} max={100} disabled={!on}
-            onChange={(v) => patch({ quantity: v })} />
+          <NumberField label="Base risk per trade ($)" value={settings.baseRisk ?? 100} min={1} max={100000} disabled={!on}
+            onChange={(v) => patch({ baseRisk: v })} />
           <NumberField label="Min. conviction" value={settings.minConviction} min={1} max={4} disabled={!on}
             onChange={(v) => patch({ minConviction: v })} />
           <NumberField label="Max open at once" value={settings.maxConcurrent} min={1} max={50} disabled={!on}
@@ -149,6 +149,14 @@ export default function AutomationPage() {
           <NumberField label="Max per day" value={settings.maxPerDay} min={1} max={200} disabled={!on}
             onChange={(v) => patch({ maxPerDay: v })} />
         </div>
+
+        <p className="mt-2 text-[11px] text-muted-2">
+          Each trade risks your base × the signal&apos;s conviction, sized automatically in micro
+          contracts:{" "}
+          <span className="text-muted">
+            L1 ${settings.baseRisk ?? 100} · L2 ${(settings.baseRisk ?? 100) * 2} · L3 ${(settings.baseRisk ?? 100) * 3} · L4 ${(settings.baseRisk ?? 100) * 4}
+          </span>
+        </p>
 
         <div className="mt-4">
           <div className="mb-1.5 text-[11px] text-muted">

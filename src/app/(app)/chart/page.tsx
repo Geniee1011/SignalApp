@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   createChart, CandlestickSeries, createSeriesMarkers, ColorType, CrosshairMode,
   type IChartApi, type ISeriesApi, type UTCTimestamp, type SeriesMarker, type SeriesMarkerBar, type Time,
@@ -8,7 +9,7 @@ import {
 } from "lightweight-charts";
 import { api, type Candle, type Signal } from "@/lib/api";
 import { generateDemoCandles } from "@/lib/demo-candles";
-import { getToken } from "@/store/auth-store";
+import { getToken, useAuthStore } from "@/store/auth-store";
 import { Card } from "@/components/ui";
 import { DateRangePicker, rangeLabel, ALL_TIME, type DateRange } from "@/components/DateRangePicker";
 import { formatCurrency, cn } from "@/lib/utils";
@@ -52,6 +53,16 @@ interface TradePoint {
 }
 
 export default function ChartPage() {
+  // Admin-only page. Subscribers get the Signals/Performance views; the raw chart is
+  // an internal tool, so a non-admin who reaches this URL is bounced to /signals.
+  const router = useRouter();
+  const ready = useAuthStore((s) => s.ready);
+  const role = useAuthStore((s) => s.user?.role);
+  const isAdmin = role === "ADMIN";
+  useEffect(() => {
+    if (ready && role && !isAdmin) router.replace("/signals");
+  }, [ready, role, isAdmin, router]);
+
   const [symbol, setSymbol] = useState("NQ");
   const [res, setRes] = useState(300);
   const [range, setRange] = useState<DateRange>(ALL_TIME);
@@ -221,6 +232,10 @@ export default function ChartPage() {
   }, [visibleSignals, res]);
 
   const closedForSymbol = useMemo(() => symbolSignals.filter((s) => s.status === "closed").sort((a, b) => (b.closedAt ?? 0) - (a.closedAt ?? 0)), [symbolSignals]);
+
+  // All hooks above run for every user (Rules of Hooks); only the render is gated.
+  // A non-admin sees nothing here — the effect above is already redirecting them.
+  if (!isAdmin) return null;
 
   return (
     <div>

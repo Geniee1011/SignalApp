@@ -121,8 +121,10 @@ export const api = {
     req<RiskConfig>("/api/admin/risk-config", { method: "PUT", body: JSON.stringify(config) }, token),
 };
 
-/** Conviction level (1-4) → target dollar risk. Drives copy position sizing. */
-export interface RiskConfig { 1: number; 2: number; 3: number; 4: number }
+/** Global DEFAULT base dollar risk per trade. A signal's risk = base × its
+ *  conviction (1-4); the copier sizes in micro contracts to hit it. Each account
+ *  can override this base in its own copy settings. */
+export interface RiskConfig { baseRisk: number }
 
 /** off = nothing; confirm = prepared, awaiting your approval; auto = placed for you. */
 export type CopyMode = "off" | "confirm" | "auto";
@@ -131,7 +133,10 @@ export interface CopySettings {
   mode: CopyMode;
   markets: string[]; // [] = every market you can see
   minConviction: number; // 1..4
-  quantity: number; // contracts per signal
+  // Base $ risk per trade; the copier risks baseRisk × the signal's conviction (1..4),
+  // sized in micro contracts. The GET response resolves null to the global default,
+  // so this is a concrete number in the UI.
+  baseRisk: number | null;
   maxConcurrent: number;
   maxPerDay: number;
 }
