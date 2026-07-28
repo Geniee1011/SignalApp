@@ -206,6 +206,7 @@ function AccessSummary({ access }: { access: AccessConfig }) {
   chips.push(access.dailyLimit == null ? "Unlimited" : `${access.dailyLimit}/day`);
   if (access.minConviction > 1) chips.push(`Conv ${access.minConviction}+`);
   if (access.allocationPercent < 100) chips.push(`Copies ${access.allocationPercent}%`);
+  if (access.maxCopiesPerDay != null) chips.push(`≤${access.maxCopiesPerDay} copies/day`);
   if (!access.live) chips.push("History only");
   return (
     <div className="flex flex-wrap gap-1">
@@ -331,6 +332,29 @@ function AccessEditor({ user, onClose, onSaved }: { user: AdminUser; onClose: ()
             <p className="text-[11px] text-muted-2">
               100% = copies every eligible signal (default). Lower spreads the fleet across different
               trades — the subscriber still <span className="text-muted">sees</span> all of them.
+            </p>
+          </Section>
+
+          {/* Max copied trades per day (admin hard cap) */}
+          <Section
+            title="Copied trades per day"
+            hint="Hard cap on trades actually placed (rolling 24h). Overrides the subscriber's own limit."
+          >
+            <div className="flex items-center gap-3">
+              <Chip active={access.maxCopiesPerDay == null} onClick={() => patch({ maxCopiesPerDay: null })}>Unlimited</Chip>
+              <input
+                type="number"
+                min={0}
+                value={access.maxCopiesPerDay ?? ""}
+                placeholder="e.g. 1"
+                onChange={(e) => patch({ maxCopiesPerDay: e.target.value === "" ? null : Math.max(0, Math.floor(Number(e.target.value))) })}
+                className="w-28 rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-sm outline-none focus:border-primary"
+              />
+              <span className="text-xs text-muted">per day</span>
+            </div>
+            <p className="text-[11px] text-muted-2">
+              Caps how many trades are <span className="text-muted">placed</span> for this account,
+              no matter how many signals they see or set on their own page.
             </p>
           </Section>
 

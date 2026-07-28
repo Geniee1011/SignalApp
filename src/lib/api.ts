@@ -42,6 +42,7 @@ export interface AccessConfig {
   live: boolean; // see active/live signals
   suspended: boolean; // feed cut entirely
   allocationPercent: number; // 0-100: copy share of eligible signals (100 = all)
+  maxCopiesPerDay: number | null; // admin hard cap on COPIED trades / rolling 24h; null = no cap
 }
 
 export interface AdminUser {
